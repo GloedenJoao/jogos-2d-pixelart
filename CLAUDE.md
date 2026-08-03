@@ -10,7 +10,7 @@ João quer gerar renda publicando jogos 2D pixel art, começando simples e evolu
 
 - [x] Estrutura de pastas criada (`framework/`, `01-jogo-puzzle/`, `02-jogo-roguelike/`, `03-jogo-platformer/`, `04-jogo-civilizacao/`, `assets/`, `docs/`).
 - [x] Plano de 90 dias e documento de temas escritos.
-- [x] Diretório versionado no git (repo em `A:\Users\joaog\Projetos_Claude`, commit inicial na branch `main`).
+- [x] **Repositório git próprio e independente** (não faz mais parte do monorepo `projetos_claude`), publicado em https://github.com/GloedenJoao/jogos-2d-pixelart (público), branch `main`.
 - [x] **Godot 4.7.1 (Standard) instalado via winget** (`GodotEngine.GodotEngine`). Alias `godot` no PATH — pode precisar reabrir o terminal para reconhecer.
 - [ ] Nenhum projeto Godot foi criado ainda dentro das pastas — só READMEs placeholder.
 - [ ] `framework/` está vazio, só tem o README com a lista do que precisa ser construído.
