@@ -1,0 +1,4 @@
+# Godot 4 - gerado automaticamente, não versionar
+.godot/
+*.translation
+export_presets.cfg

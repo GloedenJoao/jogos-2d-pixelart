@@ -11,18 +11,19 @@ João quer gerar renda publicando jogos 2D pixel art, começando simples e evolu
 - [x] Estrutura de pastas criada (`framework/`, `01-jogo-puzzle/`, `02-jogo-roguelike/`, `03-jogo-platformer/`, `04-jogo-civilizacao/`, `assets/`, `docs/`).
 - [x] Plano de 90 dias e documento de temas escritos.
 - [x] **Repositório git próprio e independente** (não faz mais parte do monorepo `projetos_claude`), publicado em https://github.com/GloedenJoao/jogos-2d-pixelart (público), branch `main`.
-- [x] **Godot 4.7.1 (Standard) instalado via winget** (`GodotEngine.GodotEngine`). Alias `godot` no PATH — pode precisar reabrir o terminal para reconhecer.
-- [ ] Nenhum projeto Godot foi criado ainda dentro das pastas — só READMEs placeholder.
-- [ ] `framework/` está vazio, só tem o README com a lista do que precisa ser construído.
-- [ ] Nenhum asset baixado ainda em `assets/`.
+- [x] **Godot 4.7.1 (Standard) instalado via winget** (`GodotEngine.GodotEngine`). Não está no PATH deste shell — usar o caminho completo do exe (`C:\Users\joaog\AppData\Local\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Microsoft.Winget.Source_8wekyb3d8bbwe\Godot_v4.7.1-stable_win64_console.exe`) até reabrir o terminal.
+- [x] **Projeto Godot criado em `framework/`** com os 5 sistemas implementados (`addons/framework/`, estruturado como addon Godot): SceneManager, SaveSystem, StateMachine, AudioManager, UITheme. Ver `framework/README.md` pra detalhes de cada um.
+- [x] **Marco dos dias 1–15 atingido**: `framework/scenes/menu.tscn` é uma tela de menu funcional (título, melhor pontuação, sliders de volume, Jogar/Sair) que usa os 4 autoloads do framework. Validado rodando o projeto headless via Godot CLI — sobe sem erros e grava `user://save.json` corretamente. StateMachine ainda não tem uso concreto (é pra entidades de jogo, que só aparecem no Projeto 1).
+- [ ] Ninguém abriu o projeto no editor Godot ainda (só validado via linha de comando/headless) — vale abrir visualmente antes de seguir.
+- [ ] Nenhum asset baixado ainda em `assets/` — UITheme usa fonte padrão do Godot, trocar por pixel font depois.
 - [ ] Conta de developer do Google Play já está paga (não é bloqueador).
 - [ ] itch.io não requer conta paga nem aprovação — pode publicar quando tiver o primeiro build.
 
 ## O que falta fazer, em ordem
 
-1. Rodar o tutorial oficial "Your First 2D Game" do Godot pra se familiarizar com o editor.
-2. Criar o projeto Godot dentro de `framework/` e começar pelos sistemas na ordem listada em `framework/README.md`: SceneManager → SaveSystem → StateMachine → AudioManager → UITheme.
-3. Só depois disso, começar `01-jogo-puzzle/` (ver `docs/plano-90-dias.md`, dias 16–40).
+1. Abrir `framework/` no editor Godot pra conferir visualmente o menu (só foi validado headless até agora).
+2. Copiar `framework/addons/framework/` pro projeto do `01-jogo-puzzle/` (criar o projeto Godot lá) e ativar o plugin. Começar o jogo puzzle em si (ver `docs/plano-90-dias.md`, dias 16–40).
+3. Baixar assets pixel art (Kenney.nl) em `assets/` conforme forem necessários — inclui uma fonte pixel pra plugar no UITheme.
 
 ## Decisões já tomadas (não reabrir sem motivo)
 
