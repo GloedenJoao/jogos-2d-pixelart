@@ -1,0 +1,20 @@
+# Godot 4+ specific ignores
+.godot/
+.import/
+export_presets.cfg
+*.translation
+
+# Godot mono-specific ignores
+.mono/
+data_*/
+
+# Import cache / thumbnails
+*.import
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
