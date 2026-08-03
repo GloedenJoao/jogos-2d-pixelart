@@ -1,0 +1,36 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/em_breve.gd" id="1"]
+
+[node name="EmBreve" type="Control" unique_id=504985570]
+script = ExtResource("1")
+layout_mode = 3
+anchors_preset = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Background" type="ColorRect" parent="." unique_id=671062456]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.101960786, 0.101960786, 0.18039216, 1)
+
+[node name="CenterContainer" type="CenterContainer" parent="." unique_id=74814577]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="VBox" type="VBoxContainer" parent="CenterContainer" unique_id=12125732]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Label" type="Label" parent="CenterContainer/VBox" unique_id=1900048577]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Em breve!"
+horizontal_alignment = 1
+
+[node name="BackButton" type="Button" parent="CenterContainer/VBox" unique_id=680126243]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Voltar"
