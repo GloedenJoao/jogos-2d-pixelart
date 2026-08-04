@@ -5,6 +5,10 @@ const BET_STEP := 10
 const STARTING_BALANCE := 500
 const CARD_SIZE := Vector2(80, 112)
 const CARDS_PATH := "res://assets/cards/"
+const CHIP_SIZE := 22
+const CHIP_DENOMS := [100, 50, 10]
+const CHIP_COLORS := {100: Color("2c2c2c"), 50: Color("1f7a3d"), 10: Color("1a5fb4")}
+const DEAL_STAGGER := 0.08
 
 var state_machine: StateMachine
 var deck: Deck
@@ -21,6 +25,7 @@ var player_value_label: Label
 var dealer_hand_box: HBoxContainer
 var player_hand_box: HBoxContainer
 var bet_label: Label
+var bet_chips_box: HBoxContainer
 var betting_controls: HBoxContainer
 var action_controls: HBoxContainer
 var resolve_controls: HBoxContainer
@@ -31,6 +36,13 @@ var double_button: Button
 var new_round_button: Button
 var music_slider: HSlider
 var sfx_slider: HSlider
+var stats_overlay: CenterContainer
+var stats_hands_label: Label
+var stats_wins_label: Label
+var stats_best_label: Label
+
+var _last_player_count := 0
+var _last_dealer_count := 0
 
 func _ready() -> void:
 	theme = UITheme.theme
@@ -91,6 +103,7 @@ func update_chips_ui() -> void:
 
 func update_bet_ui() -> void:
 	bet_label.text = "Aposta: %d" % bet
+	_rebuild_bet_chips()
 
 func set_betting_controls_visible(v: bool) -> void:
 	betting_controls.visible = v
@@ -120,15 +133,25 @@ func persist_round(outcome: RoundResolver.Outcome) -> void:
 	SaveSystem.save_data()
 
 func render_hands() -> void:
+	var prev_player_count := _last_player_count
 	_clear_box(player_hand_box)
-	for card in player_hand.cards:
-		player_hand_box.add_child(_build_card_node(card, false))
+	for i in player_hand.cards.size():
+		var node := _build_card_node(player_hand.cards[i], false)
+		player_hand_box.add_child(node)
+		if i >= prev_player_count:
+			_animate_card_in(node, i - prev_player_count)
+	_last_player_count = player_hand.cards.size()
 	player_value_label.text = "Você: %d" % player_hand.value()
 
+	var prev_dealer_count := _last_dealer_count
 	_clear_box(dealer_hand_box)
 	for i in dealer_hand.cards.size():
 		var face_down := dealer_hole_hidden and i == 0
-		dealer_hand_box.add_child(_build_card_node(dealer_hand.cards[i], face_down))
+		var node := _build_card_node(dealer_hand.cards[i], face_down)
+		dealer_hand_box.add_child(node)
+		if i >= prev_dealer_count:
+			_animate_card_in(node, i - prev_dealer_count)
+	_last_dealer_count = dealer_hand.cards.size()
 	if dealer_hole_hidden and dealer_hand.count() > 0:
 		dealer_value_label.text = "Dealer: ?"
 	else:
@@ -137,6 +160,18 @@ func render_hands() -> void:
 func _clear_box(box: HBoxContainer) -> void:
 	for child in box.get_children():
 		child.queue_free()
+
+# Efeito de "distribuir": carta nasce pequena/transparente e cresce no lugar,
+# com atraso crescente por índice pra parecer uma sequência de cartas caindo na mesa.
+func _animate_card_in(node: Control, stagger_index: int) -> void:
+	node.pivot_offset = CARD_SIZE / 2
+	node.scale = Vector2(0.4, 0.4)
+	node.modulate.a = 0.0
+	var tween := create_tween()
+	tween.tween_interval(stagger_index * DEAL_STAGGER)
+	tween.set_parallel(true)
+	tween.tween_property(node, "scale", Vector2.ONE, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(node, "modulate:a", 1.0, 0.18)
 
 var _card_texture_cache: Dictionary = {}
 
@@ -153,6 +188,51 @@ func _build_card_node(card: Card, face_down: bool) -> Control:
 	rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	rect.texture = _card_texture("card_back" if face_down else card.sprite_name())
 	return rect
+
+# Representa a aposta como uma pilha de fichas (100/50/10) em vez de só número.
+func _rebuild_bet_chips() -> void:
+	if bet_chips_box == null:
+		return
+	for child in bet_chips_box.get_children():
+		child.queue_free()
+	var remaining := bet
+	var count := 0
+	for denom in CHIP_DENOMS:
+		while remaining >= denom and count < 12:
+			bet_chips_box.add_child(_build_chip(denom))
+			remaining -= denom
+			count += 1
+
+func _build_chip(denom: int) -> Control:
+	var chip := PanelContainer.new()
+	chip.custom_minimum_size = Vector2(CHIP_SIZE, CHIP_SIZE)
+	var style := StyleBoxFlat.new()
+	style.bg_color = CHIP_COLORS[denom]
+	style.border_color = Color.WHITE
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(CHIP_SIZE / 2)
+	chip.add_theme_stylebox_override("panel", style)
+	return chip
+
+# ---- estatísticas ----
+
+func _toggle_stats() -> void:
+	if stats_overlay.visible:
+		stats_overlay.visible = false
+		return
+	_refresh_stats_panel()
+	stats_overlay.visible = true
+
+func _refresh_stats_panel() -> void:
+	var played: int = SaveSystem.get_value("blackjack_hands_played", 0)
+	var won: int = SaveSystem.get_value("blackjack_hands_won", 0)
+	var best: int = SaveSystem.get_value("blackjack_best_balance", STARTING_BALANCE)
+	var rate := 0.0
+	if played > 0:
+		rate = (float(won) / float(played)) * 100.0
+	stats_hands_label.text = "Mãos jogadas: %d" % played
+	stats_wins_label.text = "Mãos vencidas: %d (%.0f%%)" % [won, rate]
+	stats_best_label.text = "Melhor saldo: %d" % best
 
 # ---- construção da UI ----
 
@@ -194,6 +274,16 @@ func _build_ui() -> void:
 	message_label.add_theme_font_size_override("font_size", 24)
 	top_bar.add_child(message_label)
 
+	var stats_spacer := Control.new()
+	stats_spacer.custom_minimum_size = Vector2(16, 0)
+	top_bar.add_child(stats_spacer)
+
+	var stats_button := Button.new()
+	stats_button.text = "Estatísticas"
+	stats_button.custom_minimum_size = Vector2(140, 40)
+	stats_button.pressed.connect(_toggle_stats)
+	top_bar.add_child(stats_button)
+
 	# Mesa do dealer.
 	var dealer_label := Label.new()
 	dealer_label.text = "Dealer"
@@ -205,10 +295,12 @@ func _build_ui() -> void:
 	dealer_value_label.add_theme_font_size_override("font_size", 22)
 	vbox.add_child(dealer_value_label)
 
+	var dealer_table := PanelContainer.new()
+	vbox.add_child(dealer_table)
 	dealer_hand_box = HBoxContainer.new()
 	dealer_hand_box.add_theme_constant_override("separation", 12)
 	dealer_hand_box.custom_minimum_size = Vector2(0, 128)
-	vbox.add_child(dealer_hand_box)
+	dealer_table.add_child(dealer_hand_box)
 
 	var table_spacer := Control.new()
 	table_spacer.custom_minimum_size = Vector2(0, 16)
@@ -225,10 +317,12 @@ func _build_ui() -> void:
 	player_value_label.add_theme_font_size_override("font_size", 22)
 	vbox.add_child(player_value_label)
 
+	var player_table := PanelContainer.new()
+	vbox.add_child(player_table)
 	player_hand_box = HBoxContainer.new()
 	player_hand_box.add_theme_constant_override("separation", 12)
 	player_hand_box.custom_minimum_size = Vector2(0, 128)
-	vbox.add_child(player_hand_box)
+	player_table.add_child(player_hand_box)
 
 	var controls_spacer := Control.new()
 	controls_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -258,6 +352,10 @@ func _build_ui() -> void:
 	bet_plus_button.custom_minimum_size = Vector2(48, 48)
 	bet_plus_button.pressed.connect(func(): _dispatch("on_bet_plus"))
 	betting_controls.add_child(bet_plus_button)
+
+	bet_chips_box = HBoxContainer.new()
+	bet_chips_box.add_theme_constant_override("separation", 2)
+	betting_controls.add_child(bet_chips_box)
 
 	deal_button = Button.new()
 	deal_button.text = "Apostar"
@@ -326,6 +424,40 @@ func _build_ui() -> void:
 	sfx_slider.custom_minimum_size = Vector2(160, 0)
 	sfx_slider.value_changed.connect(_on_sfx_volume_changed)
 	settings_row.add_child(sfx_slider)
+
+	# Painel de estatísticas (overlay centralizado, escondido até clicar em "Estatísticas").
+	stats_overlay = CenterContainer.new()
+	stats_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	stats_overlay.visible = false
+	add_child(stats_overlay)
+
+	var stats_panel := PanelContainer.new()
+	stats_panel.custom_minimum_size = Vector2(320, 240)
+	stats_overlay.add_child(stats_panel)
+
+	var stats_vbox := VBoxContainer.new()
+	stats_vbox.add_theme_constant_override("separation", 12)
+	stats_panel.add_child(stats_vbox)
+
+	var stats_title := Label.new()
+	stats_title.text = "Estatísticas"
+	stats_title.add_theme_font_size_override("font_size", 26)
+	stats_vbox.add_child(stats_title)
+
+	stats_hands_label = Label.new()
+	stats_vbox.add_child(stats_hands_label)
+
+	stats_wins_label = Label.new()
+	stats_vbox.add_child(stats_wins_label)
+
+	stats_best_label = Label.new()
+	stats_vbox.add_child(stats_best_label)
+
+	var stats_close := Button.new()
+	stats_close.text = "Fechar"
+	stats_close.custom_minimum_size = Vector2(120, 44)
+	stats_close.pressed.connect(func(): stats_overlay.visible = false)
+	stats_vbox.add_child(stats_close)
 
 func _on_music_volume_changed(value: float) -> void:
 	AudioManager.set_music_volume(value)
