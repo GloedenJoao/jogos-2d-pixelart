@@ -16,3 +16,15 @@ Testes headless: `tests/run_tests.gd` (28 asserções — Card/Hand/Deck/RoundRe
 ```powershell
 & "C:\Users\joaog\AppData\Local\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Microsoft.Winget.Source_8wekyb3d8bbwe\Godot_v4.7.1-stable_win64_console.exe" --headless --path . --script res://tests/run_tests.gd
 ```
+
+Validação visual automatizada: `tests/visual_capture.gd` (força cenários-chave — apostando, meio da rodada, blackjack resolvido, overlay de estatísticas — igual aos testes headless, e salva screenshots em `.visual_capture/*.png`). É o jeito **padrão** de checar layout/UI agora, sem abrir o editor nem usar computer-use — só usar computer-use pra casos genuinamente interativos (testar uma animação em movimento, por exemplo).
+
+```powershell
+# Só na primeira vez num checkout/worktree novo (gera o cache de import/classes globais; sem isso "Card"/"Hand"/"Deck" não resolvem em --script):
+& "...\Godot_v4.7.1-stable_win64_console.exe" --path . --headless --import
+
+# Captura (roda em segundos, sem clique nenhum, o processo fecha sozinho):
+& "...\Godot_v4.7.1-stable_win64_console.exe" --path . --script res://tests/visual_capture.gd
+```
+
+Depois é só ler os PNGs de `.visual_capture/` direto com a ferramenta de leitura de arquivo. Pra adicionar um novo cenário, copiar o padrão de uma função `_capture_*()` existente (força o save/deck, chama o método do estado direto tipo `on_deal()`/`on_stand()`, espera os `await` necessários, e chama `_shoot("nome")`).
