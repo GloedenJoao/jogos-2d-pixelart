@@ -9,6 +9,8 @@ const COLOR_TEXT := Color("f1f1f1")
 const BORDER_WIDTH := 2
 const CORNER_RADIUS := 0
 
+const PIXEL_FONT_PATH := "res://assets/fonts/Kenney Pixel.ttf"
+
 var theme: Theme
 
 func _ready() -> void:
@@ -16,6 +18,10 @@ func _ready() -> void:
 
 func build_theme() -> Theme:
 	var t := Theme.new()
+
+	if ResourceLoader.exists(PIXEL_FONT_PATH):
+		t.default_font = load(PIXEL_FONT_PATH)
+		t.default_font_size = 18
 
 	t.set_stylebox("panel", "PanelContainer", _flat_style(COLOR_PANEL, COLOR_ACCENT))
 

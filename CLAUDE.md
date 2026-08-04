@@ -14,15 +14,15 @@ João quer gerar renda publicando jogos 2D pixel art, começando simples e evolu
 - [x] **Godot 4.7.1 (Standard) instalado via winget** (`GodotEngine.GodotEngine`). Não está no PATH deste shell — usar o caminho completo do exe (`C:\Users\joaog\AppData\Local\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Microsoft.Winget.Source_8wekyb3d8bbwe\Godot_v4.7.1-stable_win64_console.exe`) até reabrir o terminal.
 - [x] **Projeto Godot em `framework/`** com os 5 sistemas implementados (`addons/framework/`, estruturado como addon Godot): SceneManager, SaveSystem, StateMachine, AudioManager, UITheme. Ver `framework/README.md`. Marco dos dias 1–15 atingido e validado (headless + visual no editor).
 - [x] **Projeto 1 virou blackjack (21), não puzzle** — decisão do João em 2026-08-03 (pediu explicitamente pra trocar o tema). `01-jogo-blackjack/` é um projeto Godot jogável: apostar, pedir/parar/dobrar, dealer joga sozinho, blackjack paga 3:2, saldo/estatísticas persistem via SaveSystem, fases da rodada usam o StateMachine do framework. 28/28 testes headless passando (`01-jogo-blackjack/tests/`) e validado visualmente no editor (blackjack natural, hit/stand, dealer estourando/parando, empate). Ver `01-jogo-blackjack/README.md`.
-- [ ] Nenhum asset baixado ainda em `assets/` — UITheme usa fonte padrão do Godot e as cartas do blackjack são desenhadas por código (retângulo + texto), sem arte. Trocar por pixel font/assets do Kenney.nl quando for baixar.
+- [x] Assets do Kenney.nl (CC0) baixados em `assets/` (fontes em `ui/kenney-fonts/`, cartas em `sprites/kenney-playing-cards/`, créditos em `assets/CREDITOS.md`) **e já aplicados** no blackjack: `UITheme` usa `Kenney Pixel.ttf`, e as cartas (`01-jogo-blackjack/scenes/main.gd` + `scripts/card.gd`) renderizam sprites reais em vez de desenho por código. Validado visualmente no editor (rodada completa: aposta, hit, dealer estourando, carta virada revelada) e os 28 testes headless continuam passando.
+- [x] Polimento visual do blackjack: animação de "distribuir" cartas (escala/fade), aposta representada por pilha de fichas coloridas, mesas com painel/borda, e painel de "Estatísticas" (mãos jogadas/vencidas, melhor saldo) acessível por botão. Validado visualmente. Ver `01-jogo-blackjack/README.md`.
 - [ ] Conta de developer do Google Play já está paga (não é bloqueador).
 - [ ] itch.io não requer conta paga nem aprovação — pode publicar quando tiver o primeiro build.
 
 ## O que falta fazer, em ordem
 
-1. Baixar assets pixel art (Kenney.nl) em `assets/` — pelo menos uma fonte pixel pro UITheme e arte de cartas pro blackjack.
-2. Polir o blackjack (`01-jogo-blackjack/`) com a arte nova e publicar early build no itch.io.
-3. Depois do blackjack validado, seguir pro Projeto 2 (`02-jogo-roguelike/`, dias 41–65 do plano).
+1. Publicar early build do blackjack no itch.io.
+2. Depois do blackjack validado, seguir pro Projeto 2 (`02-jogo-roguelike/`, dias 41–65 do plano).
 
 ## Decisões já tomadas (não reabrir sem motivo)
 
