@@ -29,17 +29,23 @@ Perfil: programador sem experiência em engine, foco sério, sem orçamento, con
 
 - Escopo: dungeon crawler top-down curto, geração procedural simples, combate básico, inventário pequeno.
 - Objetivo de aprendizado: geração procedural, IA simples de inimigo, sistemas de progressão (upgrades entre runs), reaproveitar state machine e save do framework.
-- Esse é o projeto que deve ir a lançamento completo no itch.io (pay-what-you-want) até o dia 65.
+- **Feito** (2026-08-04): corrida de 5 andares com dificuldade crescente, 5 tipos de criatura com atributos próprios + chefe no último andar, e meta-progressão de verdade (acampamento com 4 upgrades permanentes comprados com o ouro acumulado). 97 testes headless.
+- Falta só o lançamento no itch.io (pay-what-you-want) — depende de conta/upload do João.
 
-## Dias 66–90 — Decisão: aprofundar ou avançar
+## Dias 66–90 — Projeto 3: platformer (`03-jogo-platformer`)
 
-- Medir o roguelike: downloads, % que pagou, feedback qualitativo.
-- Se teve tração: investir mais conteúdo nele (novas áreas, chefes, versão Android via conta já paga do Google Play).
-- Se não teve tração relevante: seguir pro Projeto 3 (`03-jogo-platformer`), que introduz física e animação — mais complexo, mais caro em tempo, então só vale investir depois de já ter 1-2 jogos publicados e algum aprendizado de mercado.
+- **Feito** (2026-08-04): "Andarilho das Eras" — três fases/eras, cada uma introduzindo uma mecânica de movimento (pulo → pulo duplo → dash), com física de plataforma completa (coyote time, buffer de pulo, pulo variável), state machine de animação, câmera com limites, checkpoints, corações, inimigos de patrulha e gemas. 80 testes headless, incluindo um bot que precisa terminar as três fases (regressão de level design).
+- A decisão original era "aprofundar o roguelike ou avançar": os dois foram feitos, o roguelike ganhou o conteúdo que faltava e o platformer saiu.
 
-## Depois dos 90 dias
+## Depois dos 90 dias — Projeto 4: civilização (`04-jogo-civilizacao`)
 
-- `04-jogo-civilizacao`: reconstrução do seu clicker de civilização original, agora como jogo pixel art completo, usando o framework maduro (state machine pra eras, save system, UI). Esse é o projeto mais ambicioso da lista — só faz sentido depois que o framework já foi testado em 2-3 jogos menores.
+- **Feito** (2026-08-04): "Eras da Civilização" — o clicker original como jogo pixel art completo, com 5 eras (state machine de eras), 15 construções com custo crescente e produção automática, virada de era que consome recursos, progresso offline e save automático. 93 testes headless.
+
+## Próximos passos
+
+1. Publicar os builds no itch.io (blackjack, roguelike, platformer, civilização) — é o gargalo do plano hoje, e depende do João criar/usar a conta.
+2. Áudio nos quatro jogos (o `AudioManager` do framework está pronto, faltam os sons).
+3. Medir tração no itch.io e escolher onde investir conteúdo; Google Play depois, com a conta de dev já paga.
 
 ## Métrica de sucesso realista
 

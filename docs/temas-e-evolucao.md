@@ -20,15 +20,17 @@ Alternativas: roguelike de explorador de ruínas, roguelike de alquimista coleta
 
 ## Projeto 3 — Platformer/metroidvania leve
 
-**Tema sugerido:** um "andarilho das eras" — atravessa cenários que representam diferentes períodos históricos (caverna → vila antiga → cidade industrial), cada era com mecânica de movimento nova (pulo duplo, dash, etc.) — ótimo gancho temático com seu clicker de civilização.
+**Tema escolhido e implementado:** "Andarilho das Eras" — atravessa cenários de períodos diferentes (caverna → vila antiga → cidade industrial), e cada era entrega uma mecânica de movimento nova: pulo simples, depois pulo duplo, depois dash. Os vãos das fases crescem junto com a mecânica, então a habilidade nova é obrigatória, não decorativa.
 
-**Sistemas novos:** física de plataforma, máquina de estados de animação (idle/correr/pular/atacar), câmera que segue o player, transição de cenas/checkpoints.
+**Sistemas novos:** física de plataforma (gravidade, coyote time, buffer de pulo, pulo variável), máquina de estados de animação (Idle/Run/Jump/Fall/Dash), câmera que segue o player com limites, checkpoints e respawn.
+
+**Aprendizado que valeu a viagem:** fases escritas como mapa ASCII + um bot que joga a fase inteira nos testes. Se um mapa novo ficar impossível (ou o jogador bater a cabeça numa plataforma no meio de um pulo obrigatório), o teste quebra antes de alguém jogar.
 
 ## Projeto 4 — Civilização (o grande projeto)
 
-Aqui o clicker de civilização vira um jogo pixel art completo: personagens por era (como você já vinha planejando), produção automática temática por era (mineração, agricultura, fábricas), e agora com tudo isso rodando em cima de um framework já testado em 3 jogos anteriores — save system robusto, UI polida, state machine madura pra transições de era.
+**Implementado como "Eras da Civilização":** o clicker vira jogo pixel art completo, com cinco eras (Idade da Pedra → Agricultura → Antiga → Industrial → Informação), 15 construções que produzem sozinhas, custo crescente, virada de era que consome os recursos acumulados e progresso enquanto o jogo está fechado.
 
-**Sistemas que reaproveita de tudo antes:** save/load, state machine, UI, e potencialmente elementos visuais dos projetos anteriores (sprites, efeitos).
+**Sistemas que reaproveita de tudo antes:** save/load e state machine (agora guardando eras), UITheme e fonte dos projetos 1–3, e o tileset Tiny Dungeon do Projeto 2 nos ícones das eras primitivas — exatamente a ideia de empilhar capacidade em vez de recomeçar.
 
 ## Por que essa ordem
 
