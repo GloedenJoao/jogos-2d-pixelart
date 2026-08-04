@@ -29,3 +29,11 @@
 - Conteúdo: tileset 18×18 (180 tiles: terreno com grama/areia/neve, blocos industriais, espinhos, gemas, portas, alavancas, corações) e personagens 24×24 (aventureiros e criaturas, 2–3 quadros cada)
 - Baixado em: 2026-08-04
 - Uso: arte do `03-jogo-platformer/` (as três eras usam paletas diferentes do mesmo tileset). Copiado para `03-jogo-platformer/assets/platformer/`, mantendo cada projeto Godot self-contained.
+
+## Kenney Tiny Town
+- Pasta: `sprites/kenney-tiny-town/`
+- Fonte: https://kenney.nl/assets/tiny-town
+- Licença: Creative Commons CC0 (domínio público, uso livre sem atribuição obrigatória)
+- Conteúdo: tileset 16×16 (132 tiles) com casas, lojas, cercas, árvores, estradas, ferramentas (picareta, forcado, martelo), baús, moedas e aldeões
+- Baixado em: 2026-08-04
+- Uso: construções e cenário do `04-jogo-civilizacao/`. Copiado para `04-jogo-civilizacao/assets/town/`. Esse projeto também reaproveita o tileset Tiny Dungeon (Projeto 2) em `assets/dungeon/`, para os ícones das eras primitivas.
