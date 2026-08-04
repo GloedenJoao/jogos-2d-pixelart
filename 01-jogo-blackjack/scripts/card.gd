@@ -10,6 +10,14 @@ const SUIT_SYMBOLS := {
 	Suit.CLUBS: "♣",
 	Suit.SPADES: "♠",
 }
+const SUIT_NAMES := {
+	Suit.HEARTS: "hearts",
+	Suit.DIAMONDS: "diamonds",
+	Suit.CLUBS: "clubs",
+	Suit.SPADES: "spades",
+}
+# Nomes de arquivo do pack Kenney Playing Cards (card_<suit>_<rank>.png).
+const SPRITE_RANKS := ["A", "02", "03", "04", "05", "06", "07", "08", "09", "10", "J", "Q", "K"]
 
 var suit: Suit
 var rank_index: int # 0 = Ás, 1..9 = 2..10, 10 = J, 11 = Q, 12 = K
@@ -40,3 +48,6 @@ func base_value() -> int:
 
 func label() -> String:
 	return "%s%s" % [rank_label(), suit_symbol()]
+
+func sprite_name() -> String:
+	return "card_%s_%s" % [SUIT_NAMES[suit], SPRITE_RANKS[rank_index]]

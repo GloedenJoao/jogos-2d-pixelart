@@ -4,6 +4,7 @@ const MIN_BET := 10
 const BET_STEP := 10
 const STARTING_BALANCE := 500
 const CARD_SIZE := Vector2(80, 112)
+const CARDS_PATH := "res://assets/cards/"
 
 var state_machine: StateMachine
 var deck: Deck
@@ -137,35 +138,21 @@ func _clear_box(box: HBoxContainer) -> void:
 	for child in box.get_children():
 		child.queue_free()
 
+var _card_texture_cache: Dictionary = {}
+
+func _card_texture(sprite_name: String) -> Texture2D:
+	if not _card_texture_cache.has(sprite_name):
+		_card_texture_cache[sprite_name] = load("%s%s.png" % [CARDS_PATH, sprite_name])
+	return _card_texture_cache[sprite_name]
+
 func _build_card_node(card: Card, face_down: bool) -> Control:
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size = CARD_SIZE
-
-	var style := StyleBoxFlat.new()
-	style.set_border_width_all(2)
-	style.set_corner_radius_all(4)
-	style.set_content_margin_all(2)
-
-	var label := Label.new()
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	label.add_theme_font_size_override("font_size", 22)
-
-	if face_down:
-		style.bg_color = UITheme.COLOR_ACCENT
-		style.border_color = UITheme.COLOR_ACCENT_HOVER
-		label.text = "?"
-		label.add_theme_color_override("font_color", UITheme.COLOR_TEXT)
-	else:
-		style.bg_color = Color.WHITE
-		style.border_color = Color("222222")
-		label.text = card.label()
-		label.add_theme_color_override("font_color", Color("c0392b") if card.is_red() else Color("111111"))
-
-	panel.add_theme_stylebox_override("panel", style)
-	panel.add_child(label)
-	return panel
+	var rect := TextureRect.new()
+	rect.custom_minimum_size = CARD_SIZE
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_SCALE
+	rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	rect.texture = _card_texture("card_back" if face_down else card.sprite_name())
+	return rect
 
 # ---- construção da UI ----
 
