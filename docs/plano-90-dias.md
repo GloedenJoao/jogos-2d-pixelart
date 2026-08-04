@@ -19,11 +19,11 @@ Perfil: programador sem experiência em engine, foco sério, sem orçamento, con
   - Tema de UI consistente (fonte pixel, botões, painéis)
 - Meta do marco: um projeto Godot vazio que já carrega o framework e mostra uma tela de menu funcional.
 
-## Dias 16–40 — Projeto 1: jogo puzzle (`01-jogo-puzzle`)
+## Dias 16–40 — Projeto 1: blackjack (`01-jogo-blackjack`)
 
-- Escopo mínimo: um loop de puzzle completo (grid-based, sem física), 15–20 min de conteúdo.
-- Objetivo de aprendizado: input handling, tilemap, UI de HUD, salvar progresso/recorde usando o framework.
-- Publicar early build no itch.io como devlog assim que tiver 1 fase jogável.
+- Escopo mínimo: loop completo de blackjack (21) contra o dealer — apostar, pedir/parar/dobrar, dealer joga sozinho, resolução (blackjack 3:2, vitória 1:1, empate). Substituiu o puzzle original de restauração de artefatos (decisão do João, ver `docs/temas-e-evolucao.md`).
+- Objetivo de aprendizado: input handling, HUD, state machine de fases de jogo, salvar saldo/estatísticas usando o framework.
+- Publicar early build no itch.io como devlog assim que a arte de cartas estiver pronta (hoje as cartas são placeholder de código, sem assets).
 
 ## Dias 41–65 — Projeto 2: mini roguelike (`02-jogo-roguelike`)
 

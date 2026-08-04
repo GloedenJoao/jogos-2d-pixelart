@@ -2,13 +2,13 @@
 
 A ideia é cada jogo novo introduzir 1–2 sistemas novos, sempre em cima do `framework/` compartilhado, pra você ir empilhando capacidade sem reescrever o que já funciona.
 
-## Projeto 1 — Puzzle (mais simples)
+## Projeto 1 — Blackjack (mais simples)
 
-**Tema sugerido:** um "restaurador de artefatos" — cada fase é um puzzle de encaixar peças/cores/símbolos pra reconstruir um item antigo (vaso, mosaico, pergaminho). Combina bem com pixel art e é fácil de gerar dezenas de fases só variando o layout.
+**Decisão do João (2026-08-03):** trocou o puzzle de restauração de artefatos original por um jogo de blackjack (21) contra o dealer. Motivo: preferência direta do João, feita pra ser aproveitada/melhorada nos jogos seguintes (mesma lógica do plano — introduzir sistemas reutilizáveis).
 
-Alternativas de tema: puzzle de jardim (arrumar plantas por cor/tipo), puzzle de constelações (conectar estrelas em ordem).
+**Sistemas novos:** lógica de baralho/mão (`Card`/`Deck`/`Hand`/`RoundResolver`), state machine de fases de rodada usando o `StateMachine` do framework (Betting → PlayerTurn → DealerTurn → Resolve), HUD de fichas/aposta, save de saldo e estatísticas.
 
-**Sistemas novos:** grid lógico, detecção de vitória por padrão, HUD de progresso, save de recorde/fases completadas.
+As ideias de puzzle abaixo ficam registradas caso um projeto puzzle entre no roadmap mais pra frente: um "restaurador de artefatos" (encaixar peças/cores/símbolos pra reconstruir um item antigo), puzzle de jardim (arrumar plantas por cor/tipo), ou puzzle de constelações (conectar estrelas em ordem).
 
 ## Projeto 2 — Mini roguelike
 
@@ -32,4 +32,4 @@ Aqui o clicker de civilização vira um jogo pixel art completo: personagens por
 
 ## Por que essa ordem
 
-Cada projeto é propositalmente mais complexo que o anterior, mas nunca pula um degrau: puzzle não tem física nem IA, então é o warm-up mais seguro. Roguelike introduz geração procedural e combate, mas ainda em grid/top-down simples. Platformer introduz física real, que é mais imprevisível e trabalhosa. O projeto de civilização é o mais ambicioso porque puxa sistemas de economia, múltiplas eras e produção automática — só vale tentar depois que os fundamentos (save, state machine, UI) já foram validados em jogos menores e reais, publicados e testados por outras pessoas.
+Cada projeto é propositalmente mais complexo que o anterior, mas nunca pula um degrau: blackjack não tem física nem IA de verdade (o dealer só segue uma regra fixa), então é o warm-up mais seguro. Roguelike introduz geração procedural e combate, mas ainda em grid/top-down simples. Platformer introduz física real, que é mais imprevisível e trabalhosa. O projeto de civilização é o mais ambicioso porque puxa sistemas de economia, múltiplas eras e produção automática — só vale tentar depois que os fundamentos (save, state machine, UI) já foram validados em jogos menores e reais, publicados e testados por outras pessoas.
