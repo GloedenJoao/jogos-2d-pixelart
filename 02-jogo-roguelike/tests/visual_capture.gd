@@ -15,7 +15,9 @@ func _initialize() -> void:
 
 	await _capture_exploring()
 	await _capture_combat()
+	await _capture_boss_floor()
 	await _capture_victory()
+	await _capture_camp()
 	await _capture_game_over()
 
 	print("Capturas salvas em: %s" % ProjectSettings.globalize_path(OUT_DIR))
@@ -23,7 +25,7 @@ func _initialize() -> void:
 
 func _reset_save() -> void:
 	var save_system := root.get_node("/root/SaveSystem")
-	for key in ["roguelike_runs_played", "roguelike_victories", "roguelike_total_gold"]:
+	for key in ["roguelike_runs_played", "roguelike_victories", "roguelike_total_gold", "roguelike_deepest_floor", "roguelike_upgrades"]:
 		save_system.data.erase(key)
 	save_system.save_data()
 
@@ -67,9 +69,7 @@ func _capture_combat() -> void:
 	var instance = await _new_instance()
 	instance.start_new_run(_make_flat_dungeon())
 	instance.player.hp = 12
-	var enemy := Entity.new("Limo", Vector2i(3, 2), 6, 2)
-	enemy.set_meta("tile", Vector2i(0, 9))
-	instance.enemies.append(enemy)
+	instance.enemies.append(EnemyKinds.make_entity(EnemyKinds.find_kind("limo"), Vector2i(3, 2), 1))
 	instance._rebuild_enemy_sprites()
 	instance.try_move(Vector2i(1, 0))
 	instance.try_move(Vector2i(1, 0))
@@ -79,26 +79,55 @@ func _capture_combat() -> void:
 	instance.queue_free()
 	await process_frame
 
+# Último andar: chefe visível (maior e avermelhado) e HUD marcando 5/5.
+func _capture_boss_floor() -> void:
+	_reset_save()
+	var instance = await _new_instance()
+	var dungeon := _make_flat_dungeon()
+	dungeon.enemy_spawns.append(Vector2i(6, 6))
+	dungeon.enemy_spawns.append(Vector2i(4, 3))
+	dungeon.enemy_spawns.append(Vector2i(2, 5))
+	instance.start_new_run(dungeon, instance.FLOORS_PER_RUN)
+	instance.set_message("O Guardião da Caverna bloqueia a saída.")
+	instance._render()
+	await _shoot("03_boss_floor")
+	instance.queue_free()
+	await process_frame
+
 func _capture_victory() -> void:
 	_reset_save()
 	var instance = await _new_instance()
-	instance.start_new_run(_make_flat_dungeon())
-	instance.inventory.add_gold(23)
+	instance.start_new_run(_make_flat_dungeon(), instance.FLOORS_PER_RUN)
+	instance.inventory.add_gold(83)
 	instance.player.grid_pos = instance.dungeon.exit - Vector2i(1, 0)
 	instance.try_move(Vector2i(1, 0))
-	await _shoot("03_victory")
+	await _shoot("04_victory")
+	instance.queue_free()
+	await process_frame
+
+# Acampamento com ouro guardado: alguns upgrades compráveis, outros não.
+func _capture_camp() -> void:
+	_reset_save()
+	var save_system := root.get_node("/root/SaveSystem")
+	save_system.set_value("roguelike_total_gold", 120)
+	save_system.set_value("roguelike_upgrades", {"vitalidade": 2, "suprimentos": 1})
+	save_system.save_data()
+	var instance = await _new_instance()
+	instance.open_camp()
+	await _shoot("05_camp")
 	instance.queue_free()
 	await process_frame
 
 func _capture_game_over() -> void:
 	_reset_save()
 	var instance = await _new_instance()
-	instance.start_new_run(_make_flat_dungeon())
+	instance.start_new_run(_make_flat_dungeon(), 3)
 	instance.player.hp = 1
-	var enemy := Entity.new("Fatal", Vector2i(2, 1), 999, 99)
-	enemy.set_meta("tile", Vector2i(2, 9))
-	instance.enemies.append(enemy)
+	var golem := EnemyKinds.make_entity(EnemyKinds.find_kind("golem"), Vector2i(2, 1), 3)
+	golem.attack = 99
+	instance.enemies.append(golem)
+	instance._rebuild_enemy_sprites()
 	instance.try_move(Vector2i(1, 0))
-	await _shoot("04_game_over")
+	await _shoot("06_game_over")
 	instance.queue_free()
 	await process_frame

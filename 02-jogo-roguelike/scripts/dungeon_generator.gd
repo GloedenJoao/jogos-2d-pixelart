@@ -7,11 +7,13 @@ const MAX_ROOMS := 8
 const MAX_PLACEMENT_ATTEMPTS := 40
 const MAX_ITEMS := 4
 const MAX_ENEMIES := 5
+const ENEMIES_PER_FLOOR := 2
 
-static func generate(width: int, height: int, rng: RandomNumberGenerator) -> DungeonData:
+static func generate(width: int, height: int, rng: RandomNumberGenerator, floor_number: int = 1) -> DungeonData:
 	var data := DungeonData.new()
 	data.width = width
 	data.height = height
+	data.floor_number = maxi(1, floor_number)
 	for x in width:
 		for y in height:
 			data.cells[Vector2i(x, y)] = DungeonData.Cell.WALL
@@ -107,11 +109,12 @@ static func _place_items(data: DungeonData, placed_rooms: Array[Rect2i], rng: Ra
 static func _place_enemies(data: DungeonData, placed_rooms: Array[Rect2i], rng: RandomNumberGenerator) -> void:
 	if placed_rooms.size() <= 1:
 		return
-	var count := mini(MAX_ENEMIES, placed_rooms.size() - 1)
-	for i in count:
+	# Andares mais fundos ficam mais povoados (a densidade cresce, o mapa não).
+	var budget := MAX_ENEMIES + (data.floor_number - 1) * ENEMIES_PER_FLOOR
+	for i in budget:
 		var room := placed_rooms[1 + (i % (placed_rooms.size() - 1))]
 		var pos := _random_floor_in_room(room, rng)
-		if pos == data.entrance or pos == data.exit:
+		if pos == data.entrance or pos == data.exit or data.enemy_spawns.has(pos):
 			continue
 		data.enemy_spawns.append(pos)
 
