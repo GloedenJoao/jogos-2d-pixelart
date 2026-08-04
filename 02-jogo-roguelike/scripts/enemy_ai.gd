@@ -8,7 +8,10 @@ static func decide(enemy: Entity, player: Entity, dungeon: DungeonData, occupied
 	var dist := _chebyshev(enemy.grid_pos, player.grid_pos)
 	if dist <= 1:
 		return {"action": "attack"}
-	if dist > AGGRO_RANGE:
+	# Cada tipo de criatura tem seu próprio raio de agressividade (morcego enxerga
+	# longe, fungo quase não sai do lugar); o padrão vale pra inimigos sem meta.
+	var aggro: int = int(enemy.get_meta("aggro", AGGRO_RANGE))
+	if dist > aggro:
 		return {"action": "idle"}
 	var step := _step_towards(enemy.grid_pos, player.grid_pos)
 	if step == enemy.grid_pos or not dungeon.is_floor(step) or occupied.has(step):

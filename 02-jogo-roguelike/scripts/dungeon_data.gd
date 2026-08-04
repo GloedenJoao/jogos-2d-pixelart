@@ -5,6 +5,7 @@ enum Cell { WALL, FLOOR }
 
 var width: int
 var height: int
+var floor_number: int = 1
 var cells: Dictionary = {} # Vector2i -> Cell
 var rooms: Array[Rect2i] = []
 var entrance: Vector2i

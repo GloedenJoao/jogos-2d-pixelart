@@ -7,8 +7,11 @@ const DUNGEON_HEIGHT := 24
 
 const STARTING_HP := 20
 const PLAYER_ATTACK := 4
-const ENEMY_HP := 6
-const ENEMY_ATTACK := 2
+
+# Uma corrida é uma descida por vários andares; o último tem o chefe e a saída
+# de verdade da caverna.
+const FLOORS_PER_RUN := 5
+const DESCEND_HEAL := 3
 
 const DUNGEON_TEXTURE_PATH := "res://assets/dungeon/tilemap_packed.png"
 
@@ -18,14 +21,6 @@ const PLAYER_TILE_COORD := Vector2i(1, 7)
 const EXIT_TILE_COORD := Vector2i(5, 7)
 const POTION_TILE_COORD := Vector2i(6, 9)
 
-const ENEMY_KINDS := [
-	{"name": "Limo", "tile": Vector2i(0, 9)},
-	{"name": "Caranguejo", "tile": Vector2i(2, 9)},
-	{"name": "Morcego", "tile": Vector2i(0, 10)},
-	{"name": "Golem de Pedra", "tile": Vector2i(1, 10)},
-	{"name": "Fungo Rastejante", "tile": Vector2i(2, 10)},
-]
-
 var state_machine: StateMachine
 var rng := RandomNumberGenerator.new()
 
@@ -33,6 +28,8 @@ var dungeon: DungeonData
 var player: Entity
 var enemies: Array[Entity] = []
 var inventory: Inventory
+var floor_number := 1
+var meta_levels: Dictionary = {}
 
 var tile_source_id: int
 var _dungeon_texture: Texture2D
@@ -50,6 +47,11 @@ var ui_root: Control
 var hp_label: Label
 var gold_label: Label
 var potions_label: Label
+var floor_label: Label
+var camp_overlay: CenterContainer
+var camp_gold_label: Label
+var _camp_rows: Dictionary = {} # key -> {"label": Label, "button": Button}
+var _camp_return_overlay: CenterContainer
 var message_label: Label
 var hint_label: Label
 var victory_overlay: CenterContainer
@@ -92,22 +94,57 @@ func _dispatch(method_name: String) -> void:
 	if current and current.has_method(method_name):
 		current.call(method_name)
 
+# ---- meta-progressão ----
+
+func load_meta_levels() -> Dictionary:
+	var raw = SaveSystem.get_value("roguelike_upgrades", {})
+	return raw if raw is Dictionary else {}
+
+func banked_gold() -> int:
+	return int(SaveSystem.get_value("roguelike_total_gold", 0))
+
+func buy_upgrade(key: String) -> bool:
+	var result := MetaProgression.purchase({"gold": banked_gold(), "levels": load_meta_levels()}, key)
+	if not result.ok:
+		return false
+	SaveSystem.set_value("roguelike_total_gold", result.gold)
+	SaveSystem.set_value("roguelike_upgrades", result.levels)
+	SaveSystem.save_data()
+	meta_levels = result.levels
+	_refresh_camp_ui()
+	return true
+
 # ---- ciclo de uma corrida ----
 
-func start_new_run(forced_dungeon: DungeonData = null) -> void:
-	dungeon = forced_dungeon if forced_dungeon else DungeonGenerator.generate(DUNGEON_WIDTH, DUNGEON_HEIGHT, rng)
-	player = Entity.new("Você", dungeon.entrance, STARTING_HP, PLAYER_ATTACK)
+func start_new_run(forced_dungeon: DungeonData = null, start_floor: int = 1) -> void:
+	meta_levels = load_meta_levels()
+	floor_number = maxi(1, start_floor)
+
+	player = Entity.new(
+		"Você",
+		Vector2i.ZERO,
+		MetaProgression.max_hp_for(meta_levels, STARTING_HP),
+		MetaProgression.attack_for(meta_levels, PLAYER_ATTACK)
+	)
 	inventory = Inventory.new()
+	inventory.add_potion(MetaProgression.starting_potions(meta_levels))
+
+	_enter_floor(forced_dungeon)
+
+func _enter_floor(forced_dungeon: DungeonData = null) -> void:
+	dungeon = forced_dungeon if forced_dungeon else DungeonGenerator.generate(DUNGEON_WIDTH, DUNGEON_HEIGHT, rng, floor_number)
+	dungeon.floor_number = floor_number
+	player.grid_pos = dungeon.entrance
 
 	enemies.clear()
-	for pos in dungeon.enemy_spawns:
-		var kind: Dictionary = ENEMY_KINDS[rng.randi_range(0, ENEMY_KINDS.size() - 1)]
-		var enemy := Entity.new(kind.name, pos, ENEMY_HP, ENEMY_ATTACK)
-		enemy.set_meta("tile", kind.tile)
-		enemies.append(enemy)
+	var boss_index := _boss_spawn_index()
+	for i in dungeon.enemy_spawns.size():
+		var kind: Dictionary = EnemyKinds.BOSS if i == boss_index else EnemyKinds.pick_for_floor(floor_number, rng)
+		enemies.append(EnemyKinds.make_entity(kind, dungeon.enemy_spawns[i], floor_number))
 
 	victory_overlay.visible = false
 	game_over_overlay.visible = false
+	camp_overlay.visible = false
 
 	_build_floor_layer()
 	_rebuild_item_sprites()
@@ -116,6 +153,26 @@ func start_new_run(forced_dungeon: DungeonData = null) -> void:
 	if state_machine:
 		state_machine.transition_to("Playing")
 	_render()
+
+# O chefe só aparece no último andar, guardando o spawn mais próximo da saída.
+func _boss_spawn_index() -> int:
+	if floor_number < FLOORS_PER_RUN or dungeon.enemy_spawns.is_empty():
+		return -1
+	var best := 0
+	var best_dist := 1 << 30
+	for i in dungeon.enemy_spawns.size():
+		var pos: Vector2i = dungeon.enemy_spawns[i]
+		var dist := absi(pos.x - dungeon.exit.x) + absi(pos.y - dungeon.exit.y)
+		if dist < best_dist:
+			best_dist = dist
+			best = i
+	return best
+
+func descend() -> void:
+	floor_number += 1
+	player.heal(DESCEND_HEAL)
+	_enter_floor()
+	set_message("Você desce para o andar %d da caverna. (+%d HP)" % [floor_number, DESCEND_HEAL])
 
 # ---- movimento / combate (chamado pelo PlayingState) ----
 
@@ -134,12 +191,17 @@ func try_move(dir: Vector2i) -> void:
 		var result := CombatResolver.resolve_attack(player, enemy)
 		set_message("Você ataca %s (-%d HP)." % [enemy.display_name, result.damage])
 		if result.defender_died:
-			set_message("%s foi derrotado!" % enemy.display_name)
+			var reward := MetaProgression.apply_gold_bonus(meta_levels, int(enemy.get_meta("gold", 0)))
+			inventory.add_gold(reward)
+			set_message("%s foi derrotado! (+%d de ouro)" % [enemy.display_name, reward])
 			_remove_enemy(enemy)
 	else:
 		player.grid_pos = target
 		_check_item_pickup(target)
 		if player.grid_pos == dungeon.exit:
+			if floor_number < FLOORS_PER_RUN:
+				descend()
+				return
 			_render()
 			state_machine.transition_to("Victory")
 			return
@@ -177,8 +239,9 @@ func _check_item_pickup(pos: Vector2i) -> void:
 	if item.is_empty():
 		return
 	if item.type == "gold":
-		inventory.add_gold(item.amount)
-		set_message("Você encontrou %d de ouro." % item.amount)
+		var amount := MetaProgression.apply_gold_bonus(meta_levels, int(item.amount))
+		inventory.add_gold(amount)
+		set_message("Você encontrou %d de ouro." % amount)
 	else:
 		inventory.add_potion(item.amount)
 		set_message("Você encontrou uma poção.")
@@ -209,29 +272,35 @@ func _enemies_take_turn() -> void:
 
 # ---- transições de fase (chamadas pelos states) ----
 
-func on_floor_cleared() -> void:
-	var runs_played: int = SaveSystem.get_value("roguelike_runs_played", 0) + 1
-	var victories: int = SaveSystem.get_value("roguelike_victories", 0) + 1
-	var total_gold: int = SaveSystem.get_value("roguelike_total_gold", 0) + inventory.gold
+func _bank_run(was_victory: bool) -> int:
+	var runs_played: int = int(SaveSystem.get_value("roguelike_runs_played", 0)) + 1
+	var total_gold: int = banked_gold() + inventory.gold
+	var deepest: int = maxi(int(SaveSystem.get_value("roguelike_deepest_floor", 0)), floor_number)
 	SaveSystem.set_value("roguelike_runs_played", runs_played)
-	SaveSystem.set_value("roguelike_victories", victories)
 	SaveSystem.set_value("roguelike_total_gold", total_gold)
+	SaveSystem.set_value("roguelike_deepest_floor", deepest)
+	if was_victory:
+		SaveSystem.set_value("roguelike_victories", int(SaveSystem.get_value("roguelike_victories", 0)) + 1)
 	SaveSystem.save_data()
+	return total_gold
 
-	set_message("Você encontrou a saída da caverna!")
-	victory_summary_label.text = "Ouro coletado: %d\nOuro total acumulado: %d" % [inventory.gold, total_gold]
+func on_run_completed() -> void:
+	var total_gold := _bank_run(true)
+	set_message("Você escapou da caverna!")
+	victory_summary_label.text = "Andares vencidos: %d\nOuro coletado: %d\nOuro no acampamento: %d" % [
+		floor_number, inventory.gold, total_gold
+	]
 	victory_overlay.visible = true
+	_refresh_camp_ui()
 
 func on_player_defeated() -> void:
-	var runs_played: int = SaveSystem.get_value("roguelike_runs_played", 0) + 1
-	var total_gold: int = SaveSystem.get_value("roguelike_total_gold", 0) + inventory.gold
-	SaveSystem.set_value("roguelike_runs_played", runs_played)
-	SaveSystem.set_value("roguelike_total_gold", total_gold)
-	SaveSystem.save_data()
-
+	var total_gold := _bank_run(false)
 	set_message("Você foi derrotado na caverna...")
-	game_over_summary_label.text = "Ouro coletado nesta corrida: %d\nOuro total acumulado: %d" % [inventory.gold, total_gold]
+	game_over_summary_label.text = "Chegou até o andar %d\nOuro coletado: %d\nOuro no acampamento: %d" % [
+		floor_number, inventory.gold, total_gold
+	]
 	game_over_overlay.visible = true
+	_refresh_camp_ui()
 
 # ---- renderização ----
 
@@ -247,6 +316,7 @@ func _render() -> void:
 	hp_label.text = "HP: %d/%d" % [player.hp, player.max_hp]
 	gold_label.text = "Ouro: %d" % inventory.gold
 	potions_label.text = "Poções: %d" % inventory.potions
+	floor_label.text = "Andar: %d/%d" % [floor_number, FLOORS_PER_RUN]
 
 func set_message(text: String) -> void:
 	message_label.text = text
@@ -299,8 +369,12 @@ func _rebuild_enemy_sprites() -> void:
 		sprite.queue_free()
 	_enemy_sprites.clear()
 	for enemy in enemies:
-		var tile: Vector2i = enemy.get_meta("tile", ENEMY_KINDS[0].tile)
+		var tile: Vector2i = enemy.get_meta("tile", EnemyKinds.KINDS[0].tile)
 		var sprite := _make_sprite(tile)
+		sprite.modulate = enemy.get_meta("tint", Color(1, 1, 1))
+		if enemy.get_meta("boss", false):
+			# O chefe é visivelmente maior que as criaturas comuns.
+			sprite.scale = Vector2(DISPLAY_SCALE, DISPLAY_SCALE) * 1.25
 		sprite.position = _world_pos(enemy.grid_pos)
 		entities_root.add_child(sprite)
 		_enemy_sprites[enemy] = sprite
@@ -415,6 +489,10 @@ func _build_ui() -> void:
 	potions_label.add_theme_font_size_override("font_size", 26)
 	top_bar.add_child(potions_label)
 
+	floor_label = Label.new()
+	floor_label.add_theme_font_size_override("font_size", 26)
+	top_bar.add_child(floor_label)
+
 	var top_spacer := Control.new()
 	top_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_bar.add_child(top_spacer)
@@ -447,19 +525,14 @@ func _build_ui() -> void:
 	victory_panel.add_child(victory_vbox)
 
 	var victory_title := Label.new()
-	victory_title.text = "Saída encontrada!"
+	victory_title.text = "Você escapou da caverna!"
 	victory_title.add_theme_font_size_override("font_size", 28)
 	victory_vbox.add_child(victory_title)
 
 	victory_summary_label = Label.new()
 	victory_vbox.add_child(victory_summary_label)
 
-	var victory_button := Button.new()
-	victory_button.text = "Nova corrida"
-	victory_button.custom_minimum_size = Vector2(180, 48)
-	victory_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	victory_button.pressed.connect(func(): _dispatch("on_new_run"))
-	victory_vbox.add_child(victory_button)
+	victory_vbox.add_child(_make_overlay_buttons(victory_overlay))
 
 	# Overlay de derrota.
 	game_over_overlay = CenterContainer.new()
@@ -483,9 +556,112 @@ func _build_ui() -> void:
 	game_over_summary_label = Label.new()
 	game_over_vbox.add_child(game_over_summary_label)
 
-	var game_over_button := Button.new()
-	game_over_button.text = "Tentar de novo"
-	game_over_button.custom_minimum_size = Vector2(180, 48)
-	game_over_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	game_over_button.pressed.connect(func(): _dispatch("on_new_run"))
-	game_over_vbox.add_child(game_over_button)
+	game_over_vbox.add_child(_make_overlay_buttons(game_over_overlay))
+
+	_build_camp_overlay()
+
+# Linha de botões compartilhada entre vitória e derrota: acampamento (gastar
+# ouro em upgrades permanentes) ou descer de novo.
+func _make_overlay_buttons(owner_overlay: CenterContainer) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+
+	var camp_button := Button.new()
+	camp_button.text = "Acampamento"
+	camp_button.custom_minimum_size = Vector2(180, 48)
+	camp_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	camp_button.pressed.connect(func(): open_camp(owner_overlay))
+	row.add_child(camp_button)
+
+	var run_button := Button.new()
+	run_button.text = "Nova corrida"
+	run_button.custom_minimum_size = Vector2(180, 48)
+	run_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	run_button.pressed.connect(func(): _dispatch("on_new_run"))
+	row.add_child(run_button)
+
+	return row
+
+func _build_camp_overlay() -> void:
+	camp_overlay = CenterContainer.new()
+	camp_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	camp_overlay.visible = false
+	ui_root.add_child(camp_overlay)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(560, 380)
+	camp_overlay.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	panel.add_child(vbox)
+
+	var title := Label.new()
+	title.text = "Acampamento"
+	title.add_theme_font_size_override("font_size", 30)
+	vbox.add_child(title)
+
+	camp_gold_label = Label.new()
+	camp_gold_label.add_theme_font_size_override("font_size", 22)
+	vbox.add_child(camp_gold_label)
+
+	for upgrade in MetaProgression.UPGRADES:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 16)
+		vbox.add_child(row)
+
+		var label := Label.new()
+		label.add_theme_font_size_override("font_size", 20)
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(label)
+
+		var button := Button.new()
+		button.custom_minimum_size = Vector2(160, 40)
+		button.mouse_filter = Control.MOUSE_FILTER_STOP
+		var key: String = upgrade.key
+		button.pressed.connect(func(): buy_upgrade(key))
+		row.add_child(button)
+
+		_camp_rows[key] = {"label": label, "button": button}
+
+	var close_button := Button.new()
+	close_button.text = "Voltar"
+	close_button.custom_minimum_size = Vector2(160, 44)
+	close_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	close_button.pressed.connect(close_camp)
+	vbox.add_child(close_button)
+
+	_refresh_camp_ui()
+
+func open_camp(return_overlay: CenterContainer = null) -> void:
+	_camp_return_overlay = return_overlay
+	if return_overlay:
+		return_overlay.visible = false
+	_refresh_camp_ui()
+	camp_overlay.visible = true
+
+func close_camp() -> void:
+	camp_overlay.visible = false
+	if _camp_return_overlay:
+		_camp_return_overlay.visible = true
+
+func _refresh_camp_ui() -> void:
+	if camp_gold_label == null:
+		return
+	var levels := load_meta_levels()
+	var gold := banked_gold()
+	camp_gold_label.text = "Ouro no acampamento: %d" % gold
+
+	for upgrade in MetaProgression.UPGRADES:
+		var row: Dictionary = _camp_rows.get(upgrade.key, {})
+		if row.is_empty():
+			continue
+		var level := MetaProgression.get_level(levels, upgrade.key)
+		var cost := MetaProgression.cost_for(levels, upgrade.key)
+		row.label.text = "%s  Nv %d/%d — %s" % [upgrade.label, level, upgrade.max_level, upgrade.desc]
+		if cost < 0:
+			row.button.text = "No máximo"
+			row.button.disabled = true
+		else:
+			row.button.text = "Comprar (%d)" % cost
+			row.button.disabled = gold < cost
