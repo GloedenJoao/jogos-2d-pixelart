@@ -37,19 +37,27 @@ func gather(resource: String) -> bool:
 
 # ---- produção automática ----
 
-func production_per_second() -> Dictionary:
+# `staffing` é opcional: id de construção -> fração (0..1) das vagas de
+# trabalho realmente ocupadas por um Villager em estado "trabalhando" agora
+# (ver Population.staffing_ratios(), Colônia Viva Fase 3). Sem entrada pra um
+# id, assume-se 1.0 (totalmente staffado) — mantém o 04-jogo-civilizacao (e o
+# progresso offline daqui) funcionando como um clicker puro, sem simulação.
+func production_per_second(staffing: Dictionary = {}) -> Dictionary:
 	var out := {"comida": 0.0, "materiais": 0.0, "conhecimento": 0.0}
 	for id in owned:
 		var building := Buildings.find(id)
 		if building.is_empty():
 			continue
+		var ratio: float = clampf(float(staffing.get(id, 1.0)), 0.0, 1.0)
+		if ratio <= 0.0:
+			continue
 		for resource in building.produces:
-			out[resource] += float(building.produces[resource]) * count_of(id)
+			out[resource] += float(building.produces[resource]) * count_of(id) * ratio
 	return out
 
-func tick(delta: float) -> Dictionary:
+func tick(delta: float, staffing: Dictionary = {}) -> Dictionary:
 	var gained := {}
-	var rate := production_per_second()
+	var rate := production_per_second(staffing)
 	for resource in rate:
 		var value: float = rate[resource] * delta
 		if value > 0.0:

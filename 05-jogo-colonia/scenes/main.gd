@@ -1,8 +1,11 @@
 extends Node2D
 
-# "Eras da Civilização" — o clicker do João virando jogo pixel art: recursos,
-# produção automática, construções que sobem de preço e cinco eras.
-# A cena cuida de UI, vila e persistência; toda a matemática está em Economy.
+# "Colônia Viva" — o clicker das "Eras da Civilização" virando colony sim:
+# além de Economy (matemática de recursos), Population simula moradores
+# individuais (Villager) que andam até o trabalho, produzem só enquanto
+# presentes, e têm fome/energia/humor que competem com o trabalho.
+# A cena cuida de UI, vila, moradores (sprites que só espelham Population) e
+# persistência; toda a lógica testável sem cena está em Economy/Population.
 
 const SAVE_KEY := "civilizacao"
 const AUTOSAVE_INTERVAL := 10.0
@@ -33,7 +36,18 @@ const STOCK_TIERS := [
 const STOCK_PIPS := 10
 const BUY_MULTIPLIERS := [1, 10, 25]
 
+# Cor de cada estado do Villager, pro pontinho na vila (ver _update_villager_sprites).
+const VILLAGER_STATE_COLORS := {
+	"idle": Color("9c9c9c"),
+	"walking": Color("7ab8f0"),
+	"working": Color("8fd17a"),
+	"eating": Color("d8a45c"),
+	"resting": Color("b98fd1"),
+}
+const VILLAGER_INITIAL_COUNT := 3
+
 var economy := Economy.new()
+var population := Population.new()
 var state_machine: StateMachine
 var _autosave_clock := 0.0
 
@@ -42,10 +56,14 @@ var _dungeon_texture: Texture2D
 var background: ColorRect
 var ground: ColorRect
 var village_root: Node2D
+var villagers_root: Node2D
+var _villager_dot_texture: ImageTexture
+var _villager_nodes: Dictionary = {}   # villager id -> Sprite2D
 
 var ui_root: Control
 var era_label: Label
 var era_subtitle: Label
+var population_label: Label
 var progress_bar: ProgressBar
 var progress_label: Label
 var message_label: Label
@@ -62,6 +80,7 @@ var buy_multiplier := 1
 var buy_multiplier_buttons: Dictionary = {}   # int -> Button
 
 func _ready() -> void:
+	population.rng.randomize()
 	_town_texture = load(TOWN_TEXTURE_PATH)
 	_dungeon_texture = load(DUNGEON_TEXTURE_PATH)
 	_build_world()
@@ -82,12 +101,14 @@ func _setup_state_machine() -> void:
 # ---- ciclo ----
 
 func _process(delta: float) -> void:
-	economy.tick(delta)
+	population.tick(delta, economy)
+	economy.tick(delta, population.staffing_ratios())
 	_autosave_clock += delta
 	if _autosave_clock >= AUTOSAVE_INTERVAL:
 		_autosave_clock = 0.0
 		save_game()
 	_update_hud()
+	_update_villager_sprites()
 
 func gather(resource: String) -> void:
 	if economy.gather(resource):
@@ -108,6 +129,8 @@ func buy(id: String) -> void:
 		set_message("%s construído(a). Agora são %d." % [Buildings.find(id).name, economy.count_of(id)])
 	else:
 		set_message("%d× %s construído(as). Agora são %d." % [n, Buildings.find(id).name, economy.count_of(id)])
+	population.sync_work_sites(economy)
+	population.assign_jobs()
 	_rebuild_village()
 	_update_hud()
 	save_game()
@@ -134,6 +157,8 @@ func on_era_entered(era_index: int) -> void:
 	_build_gather_buttons(era)
 	_build_building_rows()
 	_rebuild_village()
+	population.sync_work_sites(economy)
+	population.assign_jobs()
 	_update_hud()
 
 	if era_index > 0:
@@ -158,6 +183,7 @@ func _unlocked_names(era_index: int) -> Array:
 
 func save_game() -> void:
 	var data := economy.to_dict()
+	data["population"] = population.to_dict()
 	data["saved_at"] = Time.get_unix_time_from_system()
 	SaveSystem.set_value(SAVE_KEY, data)
 	SaveSystem.save_data()
@@ -170,20 +196,31 @@ func load_game() -> void:
 		var saved_at := float(data.get("saved_at", 0.0))
 		if saved_at > 0.0:
 			offline_seconds = maxf(0.0, Time.get_unix_time_from_system() - saved_at)
+		var pop_data = data.get("population", {})
+		if pop_data is Dictionary and not pop_data.is_empty():
+			population.from_dict(pop_data, economy)
 
 	state_machine.transition_to("Era%d" % economy.era_index)
+	population.ensure_minimum(VILLAGER_INITIAL_COUNT)
+	population.sync_work_sites(economy)
+	population.assign_jobs()
 
 	if offline_seconds >= 60.0:
 		var result := economy.apply_offline(offline_seconds)
+		population.apply_offline_catchup(offline_seconds, economy)
 		var minutes := int(result.seconds / 60.0)
 		set_message("Enquanto você esteve fora (%d min), a civilização seguiu produzindo." % minutes)
 		_update_hud()
 
 func reset_game() -> void:
 	economy = Economy.new()
+	population = Population.new()
+	population.rng.randomize()
 	SaveSystem.set_value(SAVE_KEY, {})
 	SaveSystem.save_data()
 	state_machine.transition_to("Era0")
+	population.ensure_minimum(VILLAGER_INITIAL_COUNT)
+	population.sync_work_sites(economy)
 
 # ---- vila ----
 
@@ -225,13 +262,44 @@ func _rebuild_village() -> void:
 		icon.position = Vector2(60 + (i % VILLAGE_PER_ROW) * 56, 530 + int(i / VILLAGE_PER_ROW) * 60)
 		village_root.add_child(icon)
 
+# ---- moradores ----
+
+# Pool de sprites: reaproveita um Sprite2D por Villager entre frames (Fase 6 —
+# nada de instanciar/destruir nó a cada tick, só reposiciona/recolore o que já
+# existe). A simulação em si mora inteira em Population; isto só espelha.
+func _update_villager_sprites() -> void:
+	var seen := {}
+	for v in population.villagers:
+		seen[v.id] = true
+		var sprite: Sprite2D = _villager_nodes.get(v.id)
+		if sprite == null:
+			sprite = Sprite2D.new()
+			sprite.texture = _villager_dot_texture
+			sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+			sprite.scale = Vector2(6, 8)
+			villagers_root.add_child(sprite)
+			_villager_nodes[v.id] = sprite
+		sprite.position = v.position
+		sprite.modulate = VILLAGER_STATE_COLORS.get(v.state, Color.WHITE)
+
+	for id in _villager_nodes.keys():
+		if not seen.has(id):
+			_villager_nodes[id].queue_free()
+			_villager_nodes.erase(id)
+
 # ---- HUD ----
 
 func set_message(text: String) -> void:
 	message_label.text = text
 
 func _update_hud() -> void:
-	var rate := economy.production_per_second()
+	population_label.text = "Moradores: %d  ·  Trabalhando: %d/%d  ·  Humor médio: %d%%" % [
+		population.villagers.size(),
+		population.count_in_state(Villager.STATE_WORKING),
+		population.employed_count(),
+		int(population.average_mood() * 100.0),
+	]
+	var rate := economy.production_per_second(population.staffing_ratios())
 	for resource in Economy.RESOURCES:
 		var row: Dictionary = resource_rows[resource]
 		var value := economy.amount(resource)
@@ -316,6 +384,20 @@ func _build_world() -> void:
 	village_root.name = "Vila"
 	add_child(village_root)
 
+	villagers_root = Node2D.new()
+	villagers_root.name = "Moradores"
+	add_child(villagers_root)
+	_villager_dot_texture = _make_villager_dot_texture()
+
+# Textura 2×2 branca reaproveitada (com `modulate`/escala) pra desenhar cada
+# morador como um pontinho colorido — não há sprite de personagem no pack de
+# assets do projeto (Kenney Tiny Town é só cenário), e um pontinho já deixa a
+# simulação visível/testável sem depender de arte nova.
+func _make_villager_dot_texture() -> ImageTexture:
+	var img := Image.create(2, 2, false, Image.FORMAT_RGBA8)
+	img.fill(Color.WHITE)
+	return ImageTexture.create_from_image(img)
+
 func _build_ui() -> void:
 	var canvas := CanvasLayer.new()
 	canvas.name = "UI"
@@ -359,6 +441,11 @@ func _build_left_column() -> Control:
 	era_subtitle = Label.new()
 	era_subtitle.add_theme_font_size_override("font_size", 20)
 	left.add_child(era_subtitle)
+
+	population_label = Label.new()
+	population_label.add_theme_font_size_override("font_size", 16)
+	population_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
+	left.add_child(population_label)
 
 	var resources_panel := PanelContainer.new()
 	resources_panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN

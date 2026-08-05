@@ -15,6 +15,7 @@ func _initialize() -> void:
 	await _capture_growing_village()
 	await _capture_era_overlay()
 	await _capture_late_game()
+	await _capture_colonia_viva()
 
 	print("Capturas salvas em: %s" % ProjectSettings.globalize_path(OUT_DIR))
 	quit(0)
@@ -91,5 +92,22 @@ func _capture_late_game() -> void:
 	instance.close_era_overlay()
 	instance.set_message("Era da Informação: a civilização inteira produzindo sozinha.")
 	await _shoot("04_era_da_informacao")
+	instance.queue_free()
+	await process_frame
+
+# Colônia Viva: moradores de verdade andando/trabalhando/comendo/descansando,
+# não só ícones estáticos de construção — este é o diferencial do Projeto 5.
+func _capture_colonia_viva() -> void:
+	var instance = await _new_game()
+	instance.economy.era_index = 1
+	instance.economy.owned = {"coletor": 6, "lascador": 4, "fogueira": 2, "fazenda": 3}
+	instance.economy.add("comida", 6000.0)
+	instance.economy.add("materiais", 2500.0)
+	instance.on_era_entered(1)
+	instance.close_era_overlay()
+	for _i in 6:
+		instance._process(4.0) # avança bastante tempo simulado pra gente andar/trabalhar/comer de verdade
+	instance.set_message("A colônia vive: cada morador anda, trabalha e cuida das próprias necessidades.")
+	await _shoot("05_colonia_viva")
 	instance.queue_free()
 	await process_frame

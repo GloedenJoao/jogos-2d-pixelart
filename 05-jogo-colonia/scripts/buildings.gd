@@ -8,6 +8,10 @@ extends RefCounted
 # "icon"/"sheet" apontam o sprite de 16×16 usado na vila e na lista: "town" é o
 # tileset Kenney Tiny Town e "dungeon" reaproveita o tileset do Projeto 2
 # (roguelike), pras eras mais primitivas.
+#
+# "jobs": vagas de trabalho por cópia da construção (Colônia Viva, Fase 3). A
+# produção de uma construção só sai de fato quando tem um Villager presente e
+# em estado "trabalhando" numa dessas vagas — ver Population.staffing_ratios().
 
 const COST_GROWTH := 1.15
 
@@ -22,6 +26,7 @@ const ALL := [
 		"icon": Vector2i(2, 7),
 		"cost": {"comida": 12.0},
 		"produces": {"comida": 0.5},
+		"jobs": 2,
 	},
 	{
 		"id": "lascador",
@@ -32,6 +37,7 @@ const ALL := [
 		"icon": Vector2i(8, 9),
 		"cost": {"comida": 25.0},
 		"produces": {"materiais": 0.3},
+		"jobs": 2,
 	},
 	{
 		"id": "fogueira",
@@ -42,6 +48,7 @@ const ALL := [
 		"icon": Vector2i(5, 2),
 		"cost": {"comida": 45.0, "materiais": 15.0},
 		"produces": {"conhecimento": 0.05},
+		"jobs": 1,
 	},
 	# --- Era 1: Agricultura ---
 	{
@@ -53,6 +60,7 @@ const ALL := [
 		"icon": Vector2i(9, 9),
 		"cost": {"comida": 80.0, "materiais": 30.0},
 		"produces": {"comida": 2.0},
+		"jobs": 3,
 	},
 	{
 		"id": "oleiro",
@@ -63,6 +71,7 @@ const ALL := [
 		"icon": Vector2i(11, 8),
 		"cost": {"comida": 120.0, "materiais": 60.0},
 		"produces": {"materiais": 1.2},
+		"jobs": 2,
 	},
 	{
 		"id": "escriba",
@@ -73,6 +82,7 @@ const ALL := [
 		"icon": Vector2i(0, 7),
 		"cost": {"comida": 200.0, "materiais": 80.0},
 		"produces": {"conhecimento": 0.3},
+		"jobs": 1,
 	},
 	# --- Era 2: Antiguidade ---
 	{
@@ -84,6 +94,7 @@ const ALL := [
 		"icon": Vector2i(8, 7),
 		"cost": {"comida": 500.0, "materiais": 300.0},
 		"produces": {"comida": 6.0},
+		"jobs": 3,
 	},
 	{
 		"id": "mina",
@@ -94,6 +105,7 @@ const ALL := [
 		"icon": Vector2i(10, 10),
 		"cost": {"comida": 600.0, "materiais": 400.0},
 		"produces": {"materiais": 5.0},
+		"jobs": 3,
 	},
 	{
 		"id": "biblioteca",
@@ -104,6 +116,7 @@ const ALL := [
 		"icon": Vector2i(11, 10),
 		"cost": {"comida": 900.0, "materiais": 600.0, "conhecimento": 50.0},
 		"produces": {"conhecimento": 1.2},
+		"jobs": 2,
 	},
 	# --- Era 3: Indústria ---
 	{
@@ -115,6 +128,7 @@ const ALL := [
 		"icon": Vector2i(10, 8),
 		"cost": {"comida": 3000.0, "materiais": 2000.0},
 		"produces": {"comida": 25.0},
+		"jobs": 4,
 	},
 	{
 		"id": "fabrica",
@@ -125,6 +139,7 @@ const ALL := [
 		"icon": Vector2i(9, 10),
 		"cost": {"comida": 3500.0, "materiais": 2500.0},
 		"produces": {"materiais": 20.0},
+		"jobs": 4,
 	},
 	{
 		"id": "escola",
@@ -135,6 +150,7 @@ const ALL := [
 		"icon": Vector2i(0, 6),
 		"cost": {"comida": 5000.0, "materiais": 3000.0, "conhecimento": 400.0},
 		"produces": {"conhecimento": 5.0},
+		"jobs": 2,
 	},
 	# --- Era 4: Informação ---
 	{
@@ -146,6 +162,7 @@ const ALL := [
 		"icon": Vector2i(9, 7),
 		"cost": {"comida": 20000.0, "materiais": 15000.0},
 		"produces": {"comida": 120.0},
+		"jobs": 5,
 	},
 	{
 		"id": "usina",
@@ -156,6 +173,7 @@ const ALL := [
 		"icon": Vector2i(4, 6),
 		"cost": {"comida": 22000.0, "materiais": 18000.0},
 		"produces": {"materiais": 100.0},
+		"jobs": 4,
 	},
 	{
 		"id": "universidade",
@@ -166,6 +184,7 @@ const ALL := [
 		"icon": Vector2i(2, 6),
 		"cost": {"comida": 30000.0, "materiais": 25000.0, "conhecimento": 3000.0},
 		"produces": {"conhecimento": 25.0},
+		"jobs": 3,
 	},
 ]
 
@@ -174,6 +193,10 @@ static func find(id: String) -> Dictionary:
 		if building.id == id:
 			return building
 	return {}
+
+static func jobs_of(id: String) -> int:
+	var building := find(id)
+	return int(building.get("jobs", 0)) if not building.is_empty() else 0
 
 static func for_era(era_index: int) -> Array:
 	var out: Array = []
