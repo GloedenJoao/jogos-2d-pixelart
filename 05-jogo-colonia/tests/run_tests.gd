@@ -22,6 +22,17 @@ func _initialize() -> void:
 	await _test_scene_era_advance()
 	await _test_scene_save_and_reload()
 	await _test_scene_offline_on_load()
+	_test_villager_entity()
+	_test_population_movement()
+	_test_work_sites_and_staffing()
+	_test_needs_decay()
+	_test_eating_consumes_food_and_restores_hunger()
+	_test_resting_restores_energy()
+	_test_decision_ai_priority()
+	_test_population_growth()
+	_test_population_save_roundtrip()
+	_test_scale_100_agents_performance()
+	await _test_scene_population_boots()
 	_report()
 
 func _assert(cond: bool, message: String) -> void:
@@ -301,6 +312,243 @@ func _test_scene_offline_on_load() -> void:
 	var instance = await _new_game()
 	_assert(instance.economy.amount("comida") > 17000.0, "uma hora fechado rendeu ~1h de produção (%s)" % Economy.format_amount(instance.economy.amount("comida")))
 	_assert(instance.message_label.text.contains("fora"), "a mensagem avisa o que rendeu offline")
+	instance.queue_free()
+	await process_frame
+
+# ---- Colônia Viva: Villager (Fase 1) ----
+
+func _test_villager_entity() -> void:
+	print("[Villager - Fase 1: entidade]")
+	var v := Villager.new(1, "Ana", Vector2(10, 20))
+	_assert(v.id == 1, "villager guarda id")
+	_assert(v.display_name == "Ana", "villager guarda nome")
+	_assert(v.position == Vector2(10, 20), "villager guarda posição")
+	_assert(v.state == Villager.STATE_IDLE, "villager nasce ocioso")
+	_assert(not v.has_job(), "villager nasce sem emprego")
+	_assert(not v.is_moving(), "parado no lugar não conta como 'andando'")
+
+	var restored := Villager.from_dict(v.to_dict())
+	_assert(restored.id == v.id and restored.display_name == v.display_name, "to_dict/from_dict preserva identidade")
+	_assert(restored.position == v.position, "to_dict/from_dict preserva posição")
+
+# ---- Colônia Viva: Population (Fases 2-6) ----
+
+func _test_population_movement() -> void:
+	print("[Population - Fase 2: movimento]")
+	var pop := Population.new()
+	var v := pop.spawn_villager(Vector2.ZERO)
+	v.position = Vector2.ZERO # spawn_villager espalha com jitter; fixa a origem pro teste
+	v.target_position = Vector2(100, 0)
+	v.state = Villager.STATE_WALKING
+	pop._move_all(0.5) # 90px/s × 0.5s = 45px
+	_assert(is_equal_approx(v.position.x, 45.0), "anda na direção do alvo, respeitando a velocidade")
+	_assert(v.is_moving(), "ainda não chegou no alvo")
+
+	pop._move_all(1.0)
+	_assert(v.position == v.target_position, "chega exatamente no alvo, sem passar dele")
+	_assert(v.state == Villager.STATE_IDLE, "ao chegar sem uma intenção pendente, volta a ficar ocioso")
+
+func _test_work_sites_and_staffing() -> void:
+	print("[Population - Fase 3: vagas de trabalho ligadas à produção]")
+	var economy := Economy.new()
+	economy.owned = {"coletor": 2} # 2 vagas por unidade × 2 unidades = 4 vagas
+	var pop := Population.new()
+	pop.sync_work_sites(economy)
+	_assert(pop.work_sites.size() == 1, "um posto de trabalho por tipo de construção possuída")
+	_assert(int(pop.work_sites[0].capacity) == 4, "capacidade = vagas por unidade × quantidade possuída")
+	_assert(is_equal_approx(float(pop.staffing_ratios().get("coletor", 0.0)), 0.0), "sem ninguém alocado e trabalhando, staffing começa em zero")
+
+	var v := pop.spawn_villager(pop.work_sites[0].position)
+	pop.assign_jobs()
+	_assert(v.has_job() and v.job_id == "coletor", "um villager ocioso é alocado numa vaga aberta")
+
+	# só estar alocado não basta: staffing exige estar de fato TRABALHANDO agora.
+	_assert(is_equal_approx(float(pop.staffing_ratios().get("coletor", 0.0)), 0.0), "alocado mas ainda não presente no posto não conta como staffado")
+	v.state = Villager.STATE_WORKING
+	var expected_ratio: float = (1.0 / 4.0) * clampf(0.6 + 0.5 * v.mood, 0.6, 1.1)
+	_assert(is_equal_approx(float(pop.staffing_ratios().get("coletor", 0.0)), expected_ratio), "staffing = fração de vagas ocupadas por quem trabalha × fator de humor")
+
+	var rate_real := economy.production_per_second(pop.staffing_ratios())
+	var rate_catalogo := economy.production_per_second()
+	_assert(rate_real.comida > 0.0, "com 1 de 4 vagas trabalhando, ainda produz alguma coisa")
+	_assert(rate_real.comida < rate_catalogo.comida, "mas bem menos que a produção 'de catálogo' (todas as vagas cheias)")
+
+func _test_needs_decay() -> void:
+	print("[Population - Fase 4: necessidades decaem com o tempo]")
+	var economy := Economy.new()
+
+	var pop_idle := Population.new()
+	var v := pop_idle.spawn_villager()
+	v.hunger = 1.0
+	v.energy = 1.0
+	v.state = Villager.STATE_IDLE
+	pop_idle._update_needs_and_decisions(60.0, economy) # 60s acumulados de uma vez (decisão em lote, Fase 6)
+	_assert(v.hunger < 1.0, "fome decai com o tempo")
+	_assert(v.energy < 1.0, "energia decai com o tempo, mesmo ocioso")
+
+	# população separada: comparar decaimento isolado, sem acumular dois passos no mesmo villager
+	var pop_working := Population.new()
+	var v2 := pop_working.spawn_villager()
+	v2.hunger = 1.0
+	v2.energy = 1.0
+	v2.state = Villager.STATE_WORKING
+	pop_working._update_needs_and_decisions(60.0, economy)
+	_assert(v2.energy < v.energy, "trabalhar cansa mais rápido que ficar ocioso")
+
+func _test_eating_consumes_food_and_restores_hunger() -> void:
+	print("[Population - Fase 4: comer resolve a fome e consome o estoque]")
+	var economy := Economy.new()
+	economy.add("comida", 1000.0)
+	var pop := Population.new()
+	var v := pop.spawn_villager(Population.PLAZA_POSITION)
+	v.hunger = 0.1
+	v.state = Villager.STATE_EATING
+	v.action_timer = Villager.EAT_DURATION
+	var before_food := economy.amount("comida")
+	pop._update_needs_and_decisions(1.0, economy)
+	_assert(economy.amount("comida") < before_food, "comer consome comida do estoque")
+	_assert(v.hunger > 0.1, "comer restaura a fome")
+
+	var economy_sem_comida := Economy.new()
+	var pop2 := Population.new()
+	var v2 := pop2.spawn_villager(Population.PLAZA_POSITION)
+	v2.hunger = 0.1
+	v2.state = Villager.STATE_EATING
+	v2.action_timer = Villager.EAT_DURATION
+	pop2._update_needs_and_decisions(1.0, economy_sem_comida)
+	_assert(v2.hunger < 0.1, "sem estoque de comida, comer não restaura nada — a fome só segue seu decaimento natural")
+
+func _test_resting_restores_energy() -> void:
+	print("[Population - Fase 4: descansar resolve o cansaço]")
+	var economy := Economy.new()
+	var pop := Population.new()
+	var v := pop.spawn_villager()
+	v.energy = 0.1
+	v.state = Villager.STATE_RESTING
+	v.action_timer = Villager.REST_DURATION
+	pop._update_needs_and_decisions(1.0, economy)
+	_assert(v.energy > 0.1, "descansar restaura energia")
+
+	pop._update_needs_and_decisions(Villager.REST_DURATION + 1.0, economy)
+	_assert(v.state == Villager.STATE_IDLE, "depois do tempo de descanso, volta a ficar ocioso")
+
+func _test_decision_ai_priority() -> void:
+	print("[Population - Fase 5: IA de decisão por utilidade]")
+	var pop := Population.new()
+	var v := pop.spawn_villager()
+	v.job_id = "coletor"
+	pop.work_sites = [{"building_id": "coletor", "position": Vector2(500, 500), "capacity": 1, "workers": [v.id]}]
+
+	v.hunger = 0.9
+	v.energy = 0.9
+	v.state = Villager.STATE_IDLE
+	pop._decide_action(v)
+	_assert(v.pending_action == "work", "com necessidades em dia, a prioridade é trabalhar")
+
+	v.hunger = 0.05
+	v.state = Villager.STATE_IDLE
+	v.pending_action = ""
+	pop._decide_action(v)
+	_assert(v.pending_action == "eat", "fome crítica tem prioridade sobre trabalhar")
+
+	v.hunger = 0.5
+	v.energy = 0.05
+	v.state = Villager.STATE_IDLE
+	v.pending_action = ""
+	pop._decide_action(v)
+	_assert(v.pending_action == "rest", "energia crítica manda descansar, mesmo com fome moderada")
+
+	var unemployed := pop.spawn_villager()
+	unemployed.hunger = 0.9
+	unemployed.energy = 0.9
+	unemployed.state = Villager.STATE_IDLE
+	pop._decide_action(unemployed)
+	_assert(unemployed.pending_action != "work", "sem emprego, não tem pra onde 'trabalhar'")
+
+func _test_population_growth() -> void:
+	print("[Population - crescimento até o alvo de vagas]")
+	var economy := Economy.new()
+	economy.owned = {"coletor": 3} # 2 vagas × 3 = 6 vagas de trabalho
+	economy.add("comida", 10000.0)
+	var pop := Population.new()
+	pop.sync_work_sites(economy)
+	var target := pop.population_target()
+	_assert(target == 6 + Population.IDLE_BUFFER, "alvo de população = vagas de trabalho + folga ociosa")
+
+	pop.ensure_minimum(1)
+	for _i in 200:
+		pop._maybe_grow(economy)
+	_assert(pop.villagers.size() == target, "a população cresce até o alvo e para exatamente nele")
+	_assert(economy.amount("comida") < 10000.0, "cada morador novo consome comida do estoque pra 'nascer'")
+
+func _test_population_save_roundtrip() -> void:
+	print("[Population - salvar e carregar]")
+	var economy := Economy.new()
+	economy.owned = {"coletor": 2}
+	var pop := Population.new()
+	pop.sync_work_sites(economy)
+	var v := pop.spawn_villager()
+	v.hunger = 0.4
+	v.energy = 0.6
+	v.mood = 0.5
+	pop.assign_jobs()
+
+	var restored := Population.new()
+	restored.from_dict(pop.to_dict(), economy)
+	_assert(restored.villagers.size() == pop.villagers.size(), "número de moradores é restaurado")
+	var rv: Villager = restored.get_villager(v.id)
+	_assert(rv != null, "cada morador é restaurado pelo id")
+	_assert(is_equal_approx(rv.hunger, 0.4) and is_equal_approx(rv.energy, 0.6), "necessidades são restauradas")
+	_assert(restored.work_sites.size() == pop.work_sites.size(), "vagas de trabalho são recalculadas a partir da economia restaurada")
+
+# Fase 0 (spike de arquitetura) validado aqui, junto com a Fase 6 (escala):
+# Villager é dado puro (sem Node2D) e needs/IA só recalculam a cada
+# DECISION_INTERVAL, não todo frame — isto prova que isso aguenta 100+
+# agentes ativos sem custo perceptível.
+func _test_scale_100_agents_performance() -> void:
+	print("[Population - Fase 0/6: spike de performance com 100 agentes]")
+	var economy := Economy.new()
+	economy.owned = {"coletor": 40, "lascador": 20} # bastante vaga de trabalho pra todo mundo
+	economy.add("comida", 1000000.0)
+	var pop := Population.new()
+	pop.sync_work_sites(economy)
+	for _i in 100:
+		pop.spawn_villager()
+	pop.assign_jobs()
+	_assert(pop.villagers.size() == 100, "100 agentes de fato instanciados")
+	_assert(pop.employed_count() == 100, "todo mundo tem vaga sobrando pra ser alocado")
+
+	var started := Time.get_ticks_usec()
+	for _i in 300: # 300 ticks de 1/60s ~= 5s de jogo simulado
+		pop.tick(1.0 / 60.0, economy)
+	var elapsed_ms := (Time.get_ticks_usec() - started) / 1000.0
+	print("  300 ticks (~5s simulados) de 100 agentes: %.1fms" % elapsed_ms)
+	_assert(elapsed_ms < 1000.0, "simular 5s de jogo com 100 agentes leva bem menos que 1000ms reais (rodou em %.1fms)" % elapsed_ms)
+
+	# Continua simulando (sem cronometrar) só pra confirmar que, dado tempo
+	# suficiente pra andar até o posto (a praça fica longe dos postos de
+	# trabalho), a alocação em papel também vira gente de fato trabalhando.
+	for _i in 1200: # mais ~20s simulados
+		pop.tick(1.0 / 60.0, economy)
+	_assert(pop.count_in_state(Villager.STATE_WORKING) > 0, "com tempo suficiente pra andar, gente de fato chega a trabalhar")
+
+func _test_scene_population_boots() -> void:
+	print("[Cena - Colônia Viva: população integrada]")
+	_reset_save()
+	var instance = await _new_game()
+	_assert(instance.population.villagers.size() >= 3, "a colônia começa com moradores")
+	_assert(instance.population_label.text.begins_with("Moradores:"), "o HUD mostra o resumo da população")
+
+	instance.economy.add("comida", 10000.0)
+	instance._update_hud()
+	instance.buy("coletor")
+	_assert(instance.population.work_sites.size() > 0, "comprar uma construção abre vagas de trabalho")
+	_assert(instance.population.employed_count() > 0, "alguém já é alocado na vaga logo depois da compra")
+
+	for _i in 8:
+		instance._process(5.0) # avança bastante tempo simulado de uma vez, sem precisar de 8×5s reais
+	_assert(instance.population.count_in_state(Villager.STATE_WORKING) > 0, "depois de um tempo, alguém chega a trabalhar de verdade (não só alocado no papel)")
+	_assert(instance.economy.production_per_second(instance.population.staffing_ratios()).comida > 0.0, "com gente presente trabalhando, a produção real (staffada) passa a existir")
 	instance.queue_free()
 	await process_frame
 
