@@ -85,13 +85,46 @@ func can_buy(id: String) -> bool:
 	return is_unlocked(id) and can_afford(cost_of(id))
 
 func buy(id: String) -> bool:
-	if not can_buy(id):
+	return buy_n(id, 1)
+
+# Custo de comprar `n` cópias de uma vez, já com o crescimento geométrico
+# aplicado a partir da quantidade atual (soma de progressão geométrica).
+func cost_of_n(id: String, n: int) -> Dictionary:
+	var building := Buildings.find(id)
+	if building.is_empty() or n <= 0:
+		return {}
+	var r: float = Buildings.COST_GROWTH
+	var series: float = pow(r, count_of(id)) * (pow(r, n) - 1.0) / (r - 1.0)
+	var out := {}
+	for resource in building.cost:
+		out[resource] = ceilf(float(building.cost[resource]) * series)
+	return out
+
+func can_buy_n(id: String, n: int) -> bool:
+	return is_unlocked(id) and n > 0 and can_afford(cost_of_n(id, n))
+
+func buy_n(id: String, n: int) -> bool:
+	if not can_buy_n(id, n):
 		return false
-	var costs := cost_of(id)
+	var costs := cost_of_n(id, n)
 	for resource in costs:
 		add(resource, -float(costs[resource]))
-	owned[id] = count_of(id) + 1
+	owned[id] = count_of(id) + n
 	return true
+
+# Quantas cópias dá pra comprar de uma vez com o estoque atual (pro botão "xMáx").
+func max_affordable(id: String, cap: int = 999) -> int:
+	if not is_unlocked(id):
+		return 0
+	var lo := 0
+	var hi := cap
+	while lo < hi:
+		var mid := (lo + hi + 1) / 2
+		if can_afford(cost_of_n(id, mid)):
+			lo = mid
+		else:
+			hi = mid - 1
+	return lo
 
 func total_buildings() -> int:
 	var total := 0

@@ -14,6 +14,9 @@ Status: jogável do começo (Idade da Pedra) ao fim (Era da Informação).
 - **Progresso offline**: ao abrir o jogo, o tempo desde o último save vira produção (com teto de 8 horas), e o jogo avisa quanto rendeu.
 - **Save automático** a cada 10 s e a cada compra/virada, via `SaveSystem` do framework.
 - **Vila que cresce na tela**: cada construção comprada vira sprite no cenário (com teto de ícones pra não virar sopa de sprites), junto com a decoração da era.
+- **Custos e produção coloridos por recurso**: cada preço/ganho na loja usa a cor do recurso (verde=comida, laranja=materiais, azul=conhecimento), pra ler rápido sem precisar decifrar texto corrido.
+- **Painel de recursos "vivo"**: cada recurso tem uma barra de pips que enche em escala logarítmica com o estoque, mais um nome de nível ("vazio" → "início" → ... → "riqueza"), simulando visualmente o mundo crescendo junto com o número.
+- **Compra em lote (×1/×10/×25/Máx)**: seletor de multiplicador no topo da loja; "Máx" calcula quantas cópias dá pra comprar de uma vez com o estoque atual (`Economy.max_affordable`).
 
 ## Arte
 
@@ -23,12 +26,13 @@ Status: jogável do começo (Idade da Pedra) ao fim (Era da Informação).
 
 ## Testes
 
-`tests/run_tests.gd` — 93 asserções headless:
+`tests/run_tests.gd` — 104 asserções headless:
 
 - catálogos (5 eras, 15 construções, 3 novas por era, construções cumulativas);
 - clique manual (rende conforme a era, recurso bloqueado antes da era certa);
 - produção por segundo, `tick()` e acúmulo de tempo;
 - custo crescente, compra debitando recursos e construção travada por era;
+- compra em lote (`cost_of_n`/`buy_n`/`max_affordable`), inclusive pela UI com o seletor ×10/xMáx;
 - virada de era: requisito, progresso, consumo e recusa na última era;
 - progresso offline (inclusive o teto de 8 h e tempo negativo);
 - salvar/carregar, com id desconhecido ignorado e era fora do intervalo limitada;
