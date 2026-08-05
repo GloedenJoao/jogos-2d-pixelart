@@ -23,13 +23,19 @@ João quer gerar renda publicando jogos 2D pixel art, começando simples e evolu
 - [x] **Projeto 4 — polimento visual e de jogabilidade (2026-08-04):** custos/produção da loja coloridos por recurso (verde/laranja/azul, igual ao nome do recurso) pra parar de ler texto corrido; painel de recursos virou uma leitura "de mundo" — pips que enchem em escala log com o estoque mais um nome de nível ("vazio" → "riqueza"), em vez de só o número cru; e compra em lote via seletor ×1/×10/×25/Máx (`Economy.cost_of_n`/`buy_n`/`max_affordable`), pedido do João pra melhorar a jogabilidade do clicker sem inventar sistema novo.
 - [x] **Projeto 2 (roguelike) — marco inicial (histórico):** João pediu pra pular a publicação do blackjack no itch.io por ora e seguir direto pro Projeto 2. `02-jogo-roguelike/` é um dungeon crawler top-down grid-based jogável: geração procedural de calabouço (`DungeonGenerator`, salas + corredores em L), combate por bump-attack, IA simples de inimigo (`EnemyAI`: ataca se adjacente, persegue dentro de um raio, senão parado), poções/ouro coletáveis, fases Playing/Victory/GameOver via StateMachine do framework, ouro total e corridas persistem via SaveSystem. Arte: tileset Kenney "Tiny Dungeon" (CC0) reaproveitado como visual de caverna. 39/39 testes headless passando (`02-jogo-roguelike/tests/run_tests.gd`, inclui BFS de conectividade do calabouço) e validado visualmente via `tests/visual_capture.gd` (explorando, combate, vitória, derrota). Ver `02-jogo-roguelike/README.md`.
 - [ ] Conta de developer do Google Play já está paga (não é bloqueador).
-- [ ] itch.io não requer conta paga nem aprovação — pode publicar quando tiver o primeiro build (blackjack e/ou roguelike).
+- [ ] itch.io não requer conta paga nem aprovação — pode publicar quando tiver o primeiro build (blackjack e/ou roguelike). **Publicação está pausada por decisão explícita do João (2026-08-04) — ver mudança de prioridade abaixo.**
+- [x] **Projeto 5 (`05-jogo-colonia/`) criado (2026-08-04)** — evolução do Projeto 4 de idle/clicker pra **colony sim** (personagens individuais simulados, estilo RimWorld/Banished), pedido explícito do João. É uma cópia do `04-jogo-civilizacao` como ponto de partida (mesmo framework/economia/assets, só `config/name` mudou) — **nada de simulação foi implementado ainda**, só o setup e o plano de fases. Plano completo, com jargão técnico explicado (agent-based simulation, utility AI, job slots, etc.) em `05-jogo-colonia/README.md` — **ler esse README antes de continuar o Projeto 5**, ele tem o "próximo passo exato" (Fase 0: spike de performance com 100 agentes).
+
+## Mudança de prioridade (2026-08-04)
+
+João decidiu explicitamente: **evoluir a profundidade do Projeto 5 agora importa mais do que publicar os 4 jogos prontos no itch.io.** Isso empurra a meta original de já estar gerando renda pra mais longe — João está ciente disso e escolheu assim mesmo. Não insistir em voltar pro itch.io sem o João trazer o assunto.
 
 ## O que falta fazer, em ordem
 
-1. **Publicar no itch.io** — é o único item do plano que ninguém tocou, e é o gargalo agora: os quatro jogos estão jogáveis e testados, falta exportar (web/HTML5) e subir. Depende do João criar/usar a conta; o Claude não publica nem cria conta por conta própria.
-2. Áudio nos quatro jogos: o `AudioManager` do framework está pronto e sem uso — faltam trilha e efeitos (CC0, mesma linha dos outros assets).
-3. Depois de medir tração no itch.io, escolher onde investir conteúdo (mais fases/eras/inimigos) e só então pensar em Google Play.
+1. **Projeto 5 — colony sim** (prioridade atual): seguir as fases descritas em `05-jogo-colonia/README.md`, começando pela Fase 0 (spike técnico de arquitetura — simulação vs. renderização, testar 100 agentes). Não pular fases, cada uma depende da anterior.
+2. **Publicar no itch.io** os quatro jogos prontos (blackjack, roguelike, platformer, civilização) — pausado por escolha do João, retomar quando ele pedir.
+3. Áudio nos quatro jogos prontos: o `AudioManager` do framework está pronto e sem uso — faltam trilha e efeitos (CC0, mesma linha dos outros assets).
+4. Depois de medir tração no itch.io (quando publicar), escolher onde investir conteúdo e só então pensar em Google Play.
 
 ## Decisões já tomadas (não reabrir sem motivo)
 
@@ -39,6 +45,7 @@ João quer gerar renda publicando jogos 2D pixel art, começando simples e evolu
 - Ordem dos jogos: blackjack → roguelike → platformer → civilização, cada um introduzindo só 1–2 sistemas novos em cima do framework. O Projeto 1 era puzzle no plano original; João pediu blackjack no lugar (ver `docs/temas-e-evolucao.md`).
 - Cada projeto Godot é self-contained: o `addons/framework/` e os assets usados são copiados pra dentro dele, sem referência cross-project. Duplicação é intencional (facilita export e abrir um projeto isolado).
 - Testes: toda a lógica de jogo fica em classes sem dependência de cena (`Economy`, `MetaProgression`, `LevelData`…), e a cena é testada instanciando `main.tscn` headless. Física de plataforma é testada rodando frames de física de verdade, não simulando à mão.
+- Projeto 5 é um fork do Projeto 4, não uma modificação nele: `04-jogo-civilizacao` fica congelado como o clicker pequeno e publicável que já é; toda a ambição de colony sim (personagens simulados, needs, IA de decisão) vai em `05-jogo-colonia`. Motivo: manter o 04 como entregável pequeno intacto, sem misturar escopo pequeno com escopo grande no mesmo projeto.
 
 ## Perguntas em aberto pro João decidir depois
 
