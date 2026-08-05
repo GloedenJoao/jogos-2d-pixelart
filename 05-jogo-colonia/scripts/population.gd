@@ -11,18 +11,16 @@ extends RefCounted
 # individual por cópia, então a vaga de trabalho segue a mesma simplificação —
 # um posto de trabalho por tipo, com `capacity = jobs_of(id) * quantidade`.
 
-const PLAZA_POSITION := Vector2(650.0, 695.0) # onde todo mundo come/descansa
+const PLAZA_POSITION := Vector2(350.0, 700.0) # onde todo mundo come/descansa
 const SPAWN_JITTER := 36.0
 
-# Grade dos postos de trabalho: fica dentro da faixa de chão que NÃO fica
-# atrás do painel de "Construções" da UI (que cobre x ⪆ 735 na tela de
-# 1280×720) — senão quem trabalha nas construções das eras tardias (a lista
-# tem 15 tipos) ficaria invisível atrás do painel. Por isso é uma grade que
-# quebra linha, não uma fileira única esticando pra direita.
-const SITE_ORIGIN := Vector2(40.0, 468.0)
-const SITE_COLS := 8
-const SITE_SPACING_X := 82.0
-const SITE_SPACING_Y := 24.0
+# Fileira dos postos de trabalho: uma faixa própria na base do chão, abaixo
+# da grade de ícones das construções (que termina por volta de y=650) e
+# dentro da área que NÃO fica atrás do painel de "Construções" da UI (que
+# cobre x ⪆ 735 na tela de 1280×720) — senão quem trabalha nas construções
+# das eras tardias (a lista tem 15 tipos) ficaria invisível atrás do painel.
+const SITE_ORIGIN := Vector2(20.0, 675.0)
+const SITE_SPACING_X := 47.0
 
 const IDLE_BUFFER := 3           # gente ociosa "de sobra" além das vagas de trabalho
 const POPULATION_CAP := 120      # teto absoluto (30-100+ pedido pelo João, com folga)
@@ -106,9 +104,7 @@ func sync_work_sites(economy: Economy) -> void:
 	for building in Buildings.ALL:
 		var id: String = building.id
 		var count := economy.count_of(id)
-		var col := index % SITE_COLS
-		var row := index / SITE_COLS
-		var pos := SITE_ORIGIN + Vector2(col * SITE_SPACING_X, row * SITE_SPACING_Y)
+		var pos := SITE_ORIGIN + Vector2(index * SITE_SPACING_X, 0.0)
 		index += 1
 		if count <= 0:
 			continue
