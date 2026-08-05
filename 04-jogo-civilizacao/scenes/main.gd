@@ -24,6 +24,14 @@ const RESOURCE_COLORS := {
 	"materiais": Color("d8a45c"),
 	"conhecimento": Color("7ab8f0"),
 }
+# Nomes que descrevem o "nível" do estoque de um recurso, do vazio à fartura —
+# dá a sensação de que o mundo cresce junto com o número.
+const STOCK_TIERS := [
+	"vazio", "início", "pequeno estoque", "estoque", "fartura",
+	"abundância", "excedente", "reserva vasta", "riqueza",
+]
+const STOCK_PIPS := 10
+const BUY_MULTIPLIERS := [1, 10, 25]
 
 var economy := Economy.new()
 var state_machine: StateMachine
@@ -41,15 +49,17 @@ var era_subtitle: Label
 var progress_bar: ProgressBar
 var progress_label: Label
 var message_label: Label
-var resource_rows: Dictionary = {}   # recurso -> {"amount": Label, "rate": Label}
+var resource_rows: Dictionary = {}   # recurso -> {"amount","rate","tier","pips":[ColorRect]}
 var gather_row: HBoxContainer
 var buildings_box: VBoxContainer
 var building_rows: Dictionary = {}   # id -> {"root","title","cost","button"}
 var advance_button: Button
-var advance_hint: Label
+var advance_hint: RichTextLabel
 var era_overlay: CenterContainer
 var era_overlay_title: Label
 var era_overlay_text: Label
+var buy_multiplier := 1
+var buy_multiplier_buttons: Dictionary = {}   # int -> Button
 
 func _ready() -> void:
 	_town_texture = load(TOWN_TEXTURE_PATH)
@@ -84,14 +94,29 @@ func gather(resource: String) -> void:
 		set_message("+%s de %s" % [Economy.format_amount(economy.click_yield()), RESOURCE_LABELS[resource].to_lower()])
 		_update_hud()
 
+func _buy_amount(id: String) -> int:
+	if buy_multiplier == -1:
+		return economy.max_affordable(id)
+	return buy_multiplier
+
 func buy(id: String) -> void:
-	if not economy.buy(id):
+	var n := maxi(_buy_amount(id), 1)
+	if not economy.buy_n(id, n):
 		set_message("Recursos insuficientes para %s." % Buildings.find(id).name)
 		return
-	set_message("%s construído(a). Agora são %d." % [Buildings.find(id).name, economy.count_of(id)])
+	if n == 1:
+		set_message("%s construído(a). Agora são %d." % [Buildings.find(id).name, economy.count_of(id)])
+	else:
+		set_message("%d× %s construído(as). Agora são %d." % [n, Buildings.find(id).name, economy.count_of(id)])
 	_rebuild_village()
 	_update_hud()
 	save_game()
+
+func set_buy_multiplier(value: int) -> void:
+	buy_multiplier = value
+	for key in buy_multiplier_buttons:
+		buy_multiplier_buttons[key].button_pressed = (key == value)
+	_update_hud()
 
 func advance_era() -> void:
 	if not economy.advance():
@@ -209,8 +234,10 @@ func _update_hud() -> void:
 	var rate := economy.production_per_second()
 	for resource in Economy.RESOURCES:
 		var row: Dictionary = resource_rows[resource]
-		row.amount.text = Economy.format_amount(economy.amount(resource))
+		var value := economy.amount(resource)
+		row.amount.text = Economy.format_amount(value)
 		row.rate.text = Economy.format_rate(rate[resource])
+		_update_stock_visual(row, value)
 
 	for id in building_rows:
 		var row: Dictionary = building_rows[id]
@@ -219,9 +246,13 @@ func _update_hud() -> void:
 		row.root.visible = visible_now
 		if not visible_now:
 			continue
+		var n := maxi(_buy_amount(id), 1)
 		row.title.text = "%s  ×%d" % [building.name, economy.count_of(id)]
-		row.cost.text = "Custo: %s   •   Produz: %s" % [_format_costs(economy.cost_of(id)), _format_production(building.produces)]
-		row.button.disabled = not economy.can_buy(id)
+		row.cost.text = "[color=#cccccc]Custo (×%d):[/color] %s\n[color=#cccccc]Produz:[/color] %s" % [
+			n, _format_costs_bbcode(economy.cost_of_n(id, n)), _format_production_bbcode(building.produces)
+		]
+		row.button.text = "Construir ×%d" % n
+		row.button.disabled = not economy.can_buy_n(id, n)
 
 	progress_bar.value = economy.era_progress() * 100.0
 	if Eras.is_last(economy.era_index):
@@ -233,21 +264,35 @@ func _update_hud() -> void:
 		progress_label.text = "Progresso para a próxima era: %d%%" % int(economy.era_progress() * 100.0)
 		advance_button.disabled = not economy.can_advance()
 		advance_button.text = "Avançar para %s" % Eras.era(economy.era_index + 1).name
-		advance_hint.text = "Custo da virada: %s" % _format_costs(Eras.requirement(economy.era_index))
+		advance_hint.text = "[color=#cccccc]Custo da virada:[/color] %s" % _format_costs_bbcode(Eras.requirement(economy.era_index))
 
-func _format_costs(costs: Dictionary) -> String:
+func _resource_color_hex(resource: String) -> String:
+	return RESOURCE_COLORS[resource].to_html(false)
+
+func _format_costs_bbcode(costs: Dictionary) -> String:
 	var parts: Array[String] = []
 	for resource in Economy.RESOURCES:
 		if costs.has(resource):
-			parts.append("%s %s" % [Economy.format_amount(float(costs[resource])), RESOURCE_LABELS[resource].to_lower()])
+			parts.append("[color=#%s]%s %s[/color]" % [_resource_color_hex(resource), Economy.format_amount(float(costs[resource])), RESOURCE_LABELS[resource].to_lower()])
 	return ", ".join(parts)
 
-func _format_production(produces: Dictionary) -> String:
+func _format_production_bbcode(produces: Dictionary) -> String:
 	var parts: Array[String] = []
 	for resource in Economy.RESOURCES:
 		if produces.has(resource):
-			parts.append("%s de %s" % [Economy.format_rate(float(produces[resource])), RESOURCE_LABELS[resource].to_lower()])
+			parts.append("[color=#%s]%s de %s[/color]" % [_resource_color_hex(resource), Economy.format_rate(float(produces[resource])), RESOURCE_LABELS[resource].to_lower()])
 	return ", ".join(parts)
+
+# "Eleva" o número puro a uma leitura de mundo: uma barra de pips que enche
+# junto com a escala logarítmica do estoque, mais um nome de nível.
+func _update_stock_visual(row: Dictionary, value: float) -> void:
+	var filled := clampi(int(floor(log(value + 1.0))), 0, STOCK_PIPS)
+	var pips: Array = row.pips
+	for i in pips.size():
+		var pip: ColorRect = pips[i]
+		pip.color = row.color if i < filled else Color(row.color, 0.12)
+	var tier_index := clampi(int(floor(log(value + 1.0) / log(10.0))), 0, STOCK_TIERS.size() - 1)
+	row.tier.text = STOCK_TIERS[tier_index].capitalize()
 
 # ---- construção da cena ----
 
@@ -324,9 +369,13 @@ func _build_left_column() -> Control:
 	resources_panel.add_child(resources_box)
 
 	for resource in Economy.RESOURCES:
+		var column := VBoxContainer.new()
+		column.add_theme_constant_override("separation", 2)
+		resources_box.add_child(column)
+
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
-		resources_box.add_child(row)
+		column.add_child(row)
 
 		var name_label := Label.new()
 		name_label.text = RESOURCE_LABELS[resource]
@@ -338,13 +387,34 @@ func _build_left_column() -> Control:
 		var amount_label := Label.new()
 		amount_label.custom_minimum_size = Vector2(110, 0)
 		amount_label.add_theme_font_size_override("font_size", 22)
+		amount_label.add_theme_color_override("font_color", RESOURCE_COLORS[resource])
 		row.add_child(amount_label)
 
 		var rate_label := Label.new()
 		rate_label.add_theme_font_size_override("font_size", 20)
 		row.add_child(rate_label)
 
-		resource_rows[resource] = {"amount": amount_label, "rate": rate_label}
+		var stock_row := HBoxContainer.new()
+		stock_row.add_theme_constant_override("separation", 3)
+		column.add_child(stock_row)
+
+		var pips: Array = []
+		for _i in STOCK_PIPS:
+			var pip := ColorRect.new()
+			pip.custom_minimum_size = Vector2(14, 8)
+			pip.color = Color(RESOURCE_COLORS[resource], 0.12)
+			stock_row.add_child(pip)
+			pips.append(pip)
+
+		var tier_label := Label.new()
+		tier_label.add_theme_font_size_override("font_size", 14)
+		tier_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+		stock_row.add_child(tier_label)
+
+		resource_rows[resource] = {
+			"amount": amount_label, "rate": rate_label,
+			"pips": pips, "tier": tier_label, "color": RESOURCE_COLORS[resource],
+		}
 
 	gather_row = HBoxContainer.new()
 	gather_row.add_theme_constant_override("separation", 10)
@@ -366,10 +436,36 @@ func _build_right_column() -> Control:
 	right.custom_minimum_size = Vector2(520, 0)
 	right.add_theme_constant_override("separation", 10)
 
+	var header_row := HBoxContainer.new()
+	header_row.add_theme_constant_override("separation", 16)
+	right.add_child(header_row)
+
 	var title := Label.new()
 	title.text = "Construções"
 	title.add_theme_font_size_override("font_size", 26)
-	right.add_child(title)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(title)
+
+	var multiplier_row := HBoxContainer.new()
+	multiplier_row.add_theme_constant_override("separation", 4)
+	header_row.add_child(multiplier_row)
+	for value in BUY_MULTIPLIERS:
+		var button := Button.new()
+		button.text = "×%d" % value
+		button.toggle_mode = true
+		button.button_pressed = value == buy_multiplier
+		button.custom_minimum_size = Vector2(46, 34)
+		button.pressed.connect(func(): set_buy_multiplier(value))
+		multiplier_row.add_child(button)
+		buy_multiplier_buttons[value] = button
+	var max_button := Button.new()
+	max_button.text = "Máx"
+	max_button.toggle_mode = true
+	max_button.button_pressed = buy_multiplier == -1
+	max_button.custom_minimum_size = Vector2(46, 34)
+	max_button.pressed.connect(func(): set_buy_multiplier(-1))
+	multiplier_row.add_child(max_button)
+	buy_multiplier_buttons[-1] = max_button
 
 	var scroll := ScrollContainer.new()
 	scroll.custom_minimum_size = Vector2(520, 420)
@@ -391,8 +487,11 @@ func _build_right_column() -> Control:
 	progress_bar.show_percentage = false
 	right.add_child(progress_bar)
 
-	advance_hint = Label.new()
-	advance_hint.add_theme_font_size_override("font_size", 18)
+	advance_hint = RichTextLabel.new()
+	advance_hint.bbcode_enabled = true
+	advance_hint.fit_content = true
+	advance_hint.scroll_active = false
+	advance_hint.add_theme_font_size_override("normal_font_size", 18)
 	right.add_child(advance_hint)
 
 	advance_button = Button.new()
@@ -453,9 +552,12 @@ func _build_building_rows() -> void:
 		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info.add_child(desc)
 
-		var cost := Label.new()
-		cost.add_theme_font_size_override("font_size", 16)
-		cost.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		var cost := RichTextLabel.new()
+		cost.bbcode_enabled = true
+		cost.fit_content = true
+		cost.scroll_active = false
+		cost.custom_minimum_size = Vector2(220, 0)
+		cost.add_theme_font_size_override("normal_font_size", 16)
 		info.add_child(cost)
 
 		var button := Button.new()

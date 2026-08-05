@@ -12,6 +12,7 @@ func _initialize() -> void:
 	_test_clicks()
 	_test_production()
 	_test_costs_and_buying()
+	_test_bulk_buying()
 	_test_era_advance()
 	_test_offline_progress()
 	_test_save_roundtrip()
@@ -96,6 +97,35 @@ func _test_costs_and_buying() -> void:
 	economy.era_index = 1
 	_assert(economy.buy("fazenda"), "ao chegar na era certa a construção libera")
 	_assert(economy.total_buildings() == 2, "total de construções soma todos os tipos")
+
+func _test_bulk_buying() -> void:
+	print("[Economy - compra em lote]")
+	var economy := Economy.new()
+	economy.add("comida", 1000.0)
+
+	var cost_n1 := economy.cost_of_n("coletor", 1)
+	_assert(cost_n1.comida == economy.cost_of("coletor").comida, "cost_of_n(1) bate com cost_of")
+
+	var single_total := 0.0
+	var economy_single := Economy.new()
+	economy_single.add("comida", 100000.0)
+	for _i in 10:
+		single_total += economy_single.cost_of("coletor").comida
+		economy_single.buy("coletor")
+	var cost_n10 := economy.cost_of_n("coletor", 10)
+	_assert(absf(cost_n10.comida - single_total) <= 10.0, "custo de comprar 10 de uma vez é equivalente a comprar 1 dez vezes (só difere no arredondamento por etapa)")
+
+	_assert(not economy.can_buy_n("coletor", 1000), "não dá pra comprar mais do que o estoque permite")
+	_assert(economy.buy_n("coletor", 5), "comprar 5 de uma vez funciona com recursos suficientes")
+	_assert(economy.count_of("coletor") == 5, "as 5 cópias entram no inventário de uma vez")
+
+	var economy2 := Economy.new()
+	economy2.add("comida", 100.0)
+	var max_n := economy2.max_affordable("coletor")
+	_assert(max_n > 0, "max_affordable calcula quantas cópias dá pra comprar")
+	_assert(economy2.can_afford(economy2.cost_of_n("coletor", max_n)), "o resultado de max_affordable é sempre pagável")
+	_assert(not economy2.can_afford(economy2.cost_of_n("coletor", max_n + 1)), "uma a mais que max_affordable já não é pagável")
+	_assert(Economy.new().max_affordable("fazenda") == 0, "construção bloqueada por era não é afordável")
 
 func _test_era_advance() -> void:
 	print("[Economy - virada de era]")
@@ -198,6 +228,17 @@ func _test_scene_gather_and_build() -> void:
 	_assert(instance.economy.count_of("coletor") == before + 1, "construir pela cena incrementa a construção")
 	_assert(instance.village_root.get_child_count() > 0, "a vila ganha sprites das construções")
 	_assert(instance.economy.production_per_second().comida > 0.0, "a produção por segundo passa a existir")
+
+	instance.economy.add("comida", 100000.0)
+	instance.set_buy_multiplier(10)
+	var before10: int = instance.economy.count_of("coletor")
+	instance.buy("coletor")
+	_assert(instance.economy.count_of("coletor") == before10 + 10, "com o multiplicador ×10 a compra soma 10 de uma vez")
+
+	instance.set_buy_multiplier(-1)
+	instance._update_hud()
+	_assert(instance.building_rows["coletor"].button.text.begins_with("Construir ×"), "o botão mostra quantas cópias o multiplicador xMáx vai comprar")
+	instance.set_buy_multiplier(1)
 	instance.queue_free()
 	await process_frame
 
