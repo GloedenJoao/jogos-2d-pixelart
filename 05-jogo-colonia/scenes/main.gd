@@ -276,7 +276,7 @@ func _update_villager_sprites() -> void:
 			sprite = Sprite2D.new()
 			sprite.texture = _villager_dot_texture
 			sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-			sprite.scale = Vector2(6, 8)
+			sprite.scale = Vector2(4, 4)
 			villagers_root.add_child(sprite)
 			_villager_nodes[v.id] = sprite
 		sprite.position = v.position
@@ -389,13 +389,33 @@ func _build_world() -> void:
 	add_child(villagers_root)
 	_villager_dot_texture = _make_villager_dot_texture()
 
-# Textura 2×2 branca reaproveitada (com `modulate`/escala) pra desenhar cada
-# morador como um pontinho colorido — não há sprite de personagem no pack de
-# assets do projeto (Kenney Tiny Town é só cenário), e um pontinho já deixa a
-# simulação visível/testável sem depender de arte nova.
+# Silhueta de gente minúscula (6×8, cabeça + corpo, contorno escuro) reaproveitada
+# com `modulate` pra colorir por estado — não há sprite de personagem no pack de
+# assets do projeto (Kenney Tiny Town é só cenário). O contorno escuro fica quase
+# preto mesmo depois do `modulate` (multiplicar por qualquer cor não some com
+# um valor já perto de zero), então o morador se destaca contra qualquer fundo.
 func _make_villager_dot_texture() -> ImageTexture:
-	var img := Image.create(2, 2, false, Image.FORMAT_RGBA8)
-	img.fill(Color.WHITE)
+	var img := Image.create(6, 8, true, Image.FORMAT_RGBA8)
+	var border := Color(0.05, 0.05, 0.05, 1.0)
+	var fill := Color.WHITE
+	var rows := [
+		"..BB..",
+		".BWWB.",
+		".BWWB.",
+		"..BB..",
+		".BWWWB",
+		"BWWWWB",
+		"BWWWWB",
+		".BBBB.",
+	]
+	for y in rows.size():
+		var row: String = rows[y]
+		for x in row.length():
+			var c: String = row[x]
+			if c == "B":
+				img.set_pixel(x, y, border)
+			elif c == "W":
+				img.set_pixel(x, y, fill)
 	return ImageTexture.create_from_image(img)
 
 func _build_ui() -> void:
