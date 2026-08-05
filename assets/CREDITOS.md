@@ -36,4 +36,12 @@
 - Licença: Creative Commons CC0 (domínio público, uso livre sem atribuição obrigatória)
 - Conteúdo: tileset 16×16 (132 tiles) com casas, lojas, cercas, árvores, estradas, ferramentas (picareta, forcado, martelo), baús, moedas e aldeões
 - Baixado em: 2026-08-04
-- Uso: construções e cenário do `04-jogo-civilizacao/`. Copiado para `04-jogo-civilizacao/assets/town/`. Esse projeto também reaproveita o tileset Tiny Dungeon (Projeto 2) em `assets/dungeon/`, para os ícones das eras primitivas.
+- Uso: construções e cenário do `04-jogo-civilizacao/`. Copiado para `04-jogo-civilizacao/assets/town/`. Esse projeto também reaproveita o tileset Tiny Dungeon (Projeto 2) em `assets/dungeon/`, para os ícones das eras primitivas. O `05-jogo-colonia/` usa os dois da mesma forma (chão, árvores, casas 2×2 e tonéis vêm daqui).
+
+## Kenney Roguelike Characters
+- Pasta: `sprites/kenney-roguelike-characters/`
+- Fonte: https://kenney.nl/assets/roguelike-characters
+- Licença: Creative Commons CC0 (domínio público, uso livre sem atribuição obrigatória)
+- Conteúdo: spritesheet 16×16 com 1px de margem (54×12 tiles) — sistema modular de "paper doll" (cabelos, roupas, elmos, escudos) mais **personagens já montados** nas colunas 0–1, linhas 5–11
+- Baixado em: 2026-08-05
+- Uso: os moradores do `05-jogo-colonia/`. Só os 12 personagens montados das linhas 5–10 entram no elenco (as peças soltas não são usadas). Copiado para `05-jogo-colonia/assets/characters/`.
