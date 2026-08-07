@@ -12,6 +12,8 @@ jogos-2d-pixelart/
 ├── 02-jogo-roguelike/        Projeto 2 — roguelike de caverna, 5 andares e meta-progressão
 ├── 03-jogo-platformer/       Projeto 3 — "Andarilho das Eras", física e animação
 ├── 04-jogo-civilizacao/      Projeto 4 — "Eras da Civilização", idle/clicker completo
+├── 05-jogo-colonia/          Projeto 5 — "Colônia Viva", colony sim com moradores autônomos
+├── 05_V2-jogo-colonia/       Projeto 5 V2 — o mesmo jogo, com os moradores refeitos
 └── assets/                   Assets compartilhados (pixel art CC0, licenças e créditos)
 ```
 
@@ -25,7 +27,9 @@ Cada projeto é um projeto Godot independente que carrega o `framework/` como ad
 | 1 | Blackjack | Fases de rodada com state machine, HUD, save de saldo | 28 |
 | 2 | Roguelike de caverna | Geração procedural, IA de inimigo, meta-progressão entre corridas | 97 |
 | 3 | Andarilho das Eras | Física de plataforma, state machine de animação, câmera, checkpoints | 80 |
-| 4 | Eras da Civilização | Economia idle, produção automática, eras, progresso offline | 93 |
+| 4 | Eras da Civilização | Economia idle, produção automática, eras, progresso offline | 104 |
+| 5 | Colônia Viva | Moradores como agentes: necessidades, IA de utilidade, produção que depende de gente presente | 172 |
+| 5 V2 | Colônia Viva — os moradores | Personagem montado e recolorido por pessoa, animação por partes, pathfinding com trilhas, mais ações autônomas | 271 |
 
 Todos rodam headless com o mesmo comando (trocando a pasta):
 
