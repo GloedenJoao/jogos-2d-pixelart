@@ -1,0 +1,132 @@
+# Projeto 7 — "Reino em Construção" (nome provisório)
+
+Documento de planejamento. Escrito antes de qualquer implementação — registra as decisões de design tomadas em conversa com o João em 2026-08-10, pra servir de referência quando a sessão de código começar.
+
+## Histórico da ideia
+
+Partiu de "quero sair do gênero clicker" → cardápio de temas → João pediu um jogo de desenvolver cidade estilo Travian/Clash of Clans → decisão de ser single-player contra IA (sem backend/multiplayer) → João pediu que o mapa fosse estilo Factorio (recursos físicos no chão, extração + transporte) → ao detalhar transporte/energia, João pediu explicitamente para pivotar a inspiração principal para **Timberborn** e **deixar combate de lado por enquanto**, focando em ser o melhor city-builder / explorador de mapa / automação de extração possível.
+
+**Combate e exército ficam fora do escopo atual.** Podem voltar depois como uma fase futura, mas não fazem parte do plano de construção do jogo por ora.
+
+## Ideia central
+
+City-builder de sobrevivência e automação: o jogador explora um mapa físico em busca de depósitos de recursos, constrói uma cadeia de extração → transporte → processamento → armazenamento, sustentada por trabalhadores alocáveis e uma rede de energia real. A tensão do jogo vem de:
+- **Recursos finitos** (motiva expansão pelo mapa em vez de otimizar um canto só).
+- **Energia e população limitadas** (motiva otimização de layout, como em Timberborn/Factorio).
+- **Água como sistema de simulação de fluxo**, não depósito estático (motiva engenharia de terreno: cavar canais, represar).
+
+## Loop principal
+
+1. Explorar o mapa (nevoeiro de guerra) e localizar depósitos.
+2. Construir extrator sobre ou perto do depósito.
+3. Ligar o prédio à energia (cabo direto ou distribuidor por raio) e/ou alocar trabalhador.
+4. Recurso extraído é transportado até o armazém/processamento por NPC carregador.
+5. Processar recursos brutos em recursos construídos (madeira → tábua, minério → lingote, pedra → bloco).
+6. Usar recursos construídos para expandir prédios, desbloquear tecnologia e alcançar novos depósitos.
+7. Depósito se esgota → motiva avançar mais no mapa, repetindo o ciclo em terreno mais desafiador.
+
+## Recursos
+
+### Brutos (extraídos do chão)
+- **Madeira** — bosques, depósito finito com leve regeneração se árvores maduras forem deixadas.
+- **Pedra** — afloramentos, finito, sem regeneração.
+- **Minério** — veios em colinas/montanhas, finito, sem regeneração.
+- **Água** — não é depósito fixo, é simulação de fluxo (ver seção própria). Extraída via captação + armazenada em barril/cisterna.
+
+### Alimento (mínimo 2 tipos, com características diferentes)
+- **Colheita/grão** — terra fértil + irrigação (precisa de água), produção em lote/estação, mais volume por ciclo.
+- **Caça/pesca** — depósito natural (animais/cardumes), produção mais rápida mas se esgota como os brutos.
+- Possível efeito de variedade alimentar na satisfação da população (a decidir na fase de balanceamento).
+
+### Processados (construídos a partir de brutos)
+- Tábua (madeira processada) — insumo da maioria dos prédios.
+- Bloco de pedra — infraestrutura e prédios avançados.
+- Lingote de metal — prédios avançados e, futuramente, tecnologia.
+
+## Água — simulação de fluxo, não depósito estático
+
+Decisão explícita do João: precisa ser possível **"abrir rios"** — cavar canais, redirecionar fluxo, represar. Isso pede um autômato celular parecido com o do incêndio (Projeto 6, `fire_sim.gd`): água como célula com volume/altura que escoa entre tiles vizinhos conforme diferença de altura e obstáculos.
+
+Isso permite:
+- Cavar canais (remove terreno, abre caminho para a água escoar até uma área nova).
+- Construir represas/comportas (bloqueiam ou controlam o fluxo — decisão espacial real).
+- Extratores de água ficam sensíveis a "tem água aqui agora?" em vez de um depósito fixo que só esvazia.
+
+Água é um recurso **compartilhado entre três usos**: consumo industrial (prédios), consumo da população (beber) e irrigação da fazenda. Isso significa que faltar água tem efeito em cascata sobre os três sistemas — não é um recurso isolado.
+
+Consistente com a lição já registrada no projeto ([[reference_simulation_constants_need_measurement]]): a velocidade de escoamento e os limiares de volume por célula devem ser medidos com script de calibração antes de virar constante travada, não chutados.
+
+## Energia
+
+Três fontes:
+- **Lenha** — queima madeira/tábua, gerador simples, sempre disponível mas consome recurso.
+- **Roda d'água** — precisa estar posicionada no rio/fluxo de água, grátis para operar depois de construída, limitada por localização.
+- **Vento** — precisa de posição aberta/elevada, grátis, possivelmente com variação de intensidade.
+
+Duas formas de distribuição:
+- **Cabo direto** — conecta prédio a prédio manualmente, mais barato, exige planejamento de layout (o jogador desenha a rede).
+- **Distribuidor por raio** — mais caro de construir, cobre uma área sem exigir cabos individuais, melhor para clusters densos de prédios.
+
+Regra geral: todo prédio de produção precisa de **energia OU trabalhador alocado** para funcionar (alguns prédios avançados podem exigir os dois).
+
+## Trabalhadores (estilo Timberborn)
+
+- População é um recurso central: cada trabalhador é alocado a UM prédio por vez.
+- Trabalhadores se deslocam fisicamente até o prédio (reaproveita o modelo de agente + pathfinder da Colônia V2 — ver `05_V2-jogo-colonia/scripts/pathfinder.gd`). Prédio longe do núcleo populacional custa tempo de trajeto.
+- Necessidades dos trabalhadores (comida, água, descanso) consomem parte da produção — mesmo ciclo de sustentar quem sustenta a produção que já existe na Colônia, agora aplicado a um jogo de automação.
+
+## Transporte de recursos
+
+Decisão: **NPC carregador**, não esteira. Motivo (registrado em conversa): esteira exigiria um sistema de tiles direcionais + item físico se movendo tile a tile — o tipo de sistema que vira o centro do jogo se bem feito, mas o mais caro de construir e testar. NPC carregador reaproveita quase inteiramente o agente + pathfinder já validado na Colônia V2, entrega mais rápido e ainda dá a sensação de logística física. Esteira fica como possível desbloqueio tardio, não como base do jogo.
+
+## Pathfinding — estratégia recomendada
+
+O A* por agente (`AStarGrid2D`, já validado na Colônia V2) continua sendo a base, mas esse jogo tem um padrão de tráfego diferente: **muitos NPCs convergindo para o mesmo destino** (armazém central, poço). Rodar A* individual para cada um é redundante e caro em escala.
+
+Estratégia: **flow field** para os destinos fixos mais visitados (calcula o campo de direção uma vez; todo NPC indo para lá segue o campo — muito mais barato com dezenas de agentes simultâneos) combinado com A* pontual para trajetos incomuns/um-off. As trilhas de pisoteio que já existem na Colônia V2 continuam válidas, realimentando o custo de ambos os sistemas.
+
+## Construções previstas (primeira leva, sem combate)
+
+**Extração**
+- Posto de Lenhador (madeira, NPC)
+- Pedreira (pedra, energia ou NPC)
+- Mina (minério, energia ou NPC)
+- Captação de Água (água, energia ou NPC) + Barril/Cisterna (armazenamento)
+- Fazenda (colheita, NPC, precisa de irrigação)
+- Posto de Caça/Pesca (segundo tipo de comida, NPC)
+
+**Energia**
+- Gerador a Lenha
+- Roda D'água (exige posição no rio)
+- Moinho de Vento
+- Distribuidor de Energia (raio)
+
+**Processamento**
+- Serraria (madeira → tábua)
+- Forja (minério → lingote)
+- Oficina de Pedra (pedra → bloco)
+
+**Infraestrutura/logística**
+- Armazém (estoque central de brutos)
+- Depósito especializado por tipo de recurso (se o volume pedir)
+- Estrada/trilha (acelera trajeto de NPC, reaproveitando trilhas de pisoteio)
+- Canal/represa/comporta (engenharia de água)
+
+**Habitação e vida**
+- Casa (abriga população, define teto de trabalhadores)
+- Poço/fonte de água potável (consumo da população)
+- Espaço de convívio (reaproveita ideia da fogueira/praça da Colônia)
+
+**Progressão**
+- Centro/Prefeitura por níveis, desbloqueando prédios e alcance de exploração.
+
+## Fora de escopo (por enquanto)
+
+- Exército, tropas, combate contra vilas de IA — descartado explicitamente pelo João em 2026-08-10 em favor de aprofundar city-building/automação. Pode ser retomado como fase futura, mas não faz parte do plano de construção atual.
+- Multiplayer/backend — descartado desde o início da conversa; jogo é single-player, self-contained como os demais projetos do repositório.
+
+## Próximos passos
+
+1. Quebrar este design em fases pequenas e testáveis (padrão de todos os projetos anteriores: cada fase jogável e coberta por testes headless antes de avançar).
+2. Validar visualmente cada fase antes de seguir para a próxima (screenshots automáticos + revisão do João).
+3. Calibrar constantes de simulação (fluxo de água, tempos de trajeto, produção) com script de medição, não chute — lição já registrada de erros anteriores do projeto.
