@@ -73,14 +73,24 @@ const CHAR_TILE := 16
 const CHAR_MARGIN := 1
 const CHAR_COORD := Vector2i(0, 5)   # um personagem fixo — só 1 trabalhador na Fase 2
 const WORKER_SCALE := 2.0
+# A Pedreira nasce EM CIMA de uma célula de pedra (ver
+# Buildings.nearest_deposit_cell) — um marcador em tom de pedra ficava quase
+# indistinguível do próprio depósito por baixo dele (achado revisando a Fase
+# 2: dava pra confundir "tem uma Pedreira ali" com "é só mais pedra"). Por
+# isso a cor da Pedreira é terracota, não cinza — precisa contrastar com o
+# chão que ela ocupa, não combinar com ele. `C_BUILDING_OUTLINE` reforça isso
+# de forma genérica: toda construção ganha uma borda escura, então nenhuma
+# combinação futura de cor-de-prédio × cor-de-terreno pode repetir o mesmo
+# problema sem alguém precisar lembrar da regra.
 const C_BUILDING := {
 	Buildings.Kind.LUMBERJACK: Color("8a5a34"),
-	Buildings.Kind.QUARRY: Color("8a8a94"),
+	Buildings.Kind.QUARRY: Color("b5493a"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
-	Buildings.Kind.QUARRY: Color("5a5a63"),
+	Buildings.Kind.QUARRY: Color("7a2f26"),
 }
+const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
 	Worker.State.IDLE: Color("cfcfcf"),
 	Worker.State.WALKING: Color("9fd0ff"),
@@ -389,15 +399,23 @@ func _make_building_node(building: Buildings.Building) -> Node2D:
 	var node := Node2D.new()
 	node.position = Vector2(building.cell) * CELL
 
+	# Borda escura por baixo de tudo: garante silhueta legível mesmo se a cor
+	# do prédio um dia acabar parecida com a do terreno embaixo dele de novo.
+	var outline := ColorRect.new()
+	outline.size = Vector2(CELL, CELL) * 0.86
+	outline.position = Vector2(CELL, CELL) * 0.07
+	outline.color = C_BUILDING_OUTLINE
+	node.add_child(outline)
+
 	var base := ColorRect.new()
-	base.size = Vector2(CELL, CELL) * 0.8
-	base.position = Vector2(CELL, CELL) * 0.1
+	base.size = Vector2(CELL, CELL) * 0.74
+	base.position = Vector2(CELL, CELL) * 0.13
 	base.color = C_BUILDING[building.kind]
 	node.add_child(base)
 
 	var roof := ColorRect.new()
-	roof.size = Vector2(CELL * 0.9, CELL * 0.35)
-	roof.position = Vector2(CELL * 0.05, CELL * 0.05)
+	roof.size = Vector2(CELL * 0.74, CELL * 0.28)
+	roof.position = Vector2(CELL * 0.13, CELL * 0.13)
 	roof.color = C_BUILDING_ROOF[building.kind]
 	node.add_child(roof)
 
