@@ -54,10 +54,25 @@ func _initialize() -> void:
 	_test_fog_explored_persists_after_source_moves()
 	_test_fog_out_of_bounds_is_safe()
 
+	_test_pathfinder_open_grid()
+	_test_pathfinder_detours_around_solid()
+	_test_pathfinder_nearest_free()
+	_test_pathfinder_trail_forms_and_decays()
+
+	_test_workers_spawn_and_arrive_close_target_immediately()
+	_test_workers_walk_and_arrive_exactly_at_target()
+	_test_workers_move_independently()
+
+	_test_buildings_place_and_assign()
+	_test_buildings_only_produce_when_worker_is_working()
+	_test_buildings_production_stops_when_deposit_empties()
+	_test_buildings_nearest_deposit_cell()
+
 	await _test_scene_boots()
 	await _test_scene_camera_limits_to_map_size()
 	await _test_scene_click_reveals_fog()
 	await _test_scene_pan_moves_camera_within_limits()
+	await _test_scene_worker_arrives_and_produces()
 
 	print("")
 	if _fail == 0:
@@ -396,7 +411,188 @@ func _test_fog_out_of_bounds_is_safe() -> void:
 	_check(f.is_visible(0, 0), "revelar perto da borda com centro fora do mapa ainda alcança células válidas")
 	_check(not f.is_visible(50, 50), "consultar fora do mapa devolve falso, não erro")
 
-# ---- Fase 1: cena ----
+# ---- Fase 2: pathfinder (portado de 05_V2-jogo-colonia/scripts/pathfinder.gd) ----
+
+func _pf(cols: int = 20, rows: int = 20, cell: float = 32.0) -> Pathfinder:
+	var pf := Pathfinder.new()
+	pf.setup(cols, rows, cell)
+	pf.rebuild([])
+	return pf
+
+func _test_pathfinder_open_grid() -> void:
+	var pf := _pf()
+	var start := Vector2(16.0, 16.0)
+	var goal := Vector2(300.0, 300.0)
+	var path := pf.find_path(start, goal)
+	_check(path.size() > 0, "grade aberta sempre devolve algum caminho")
+	_near(path[path.size() - 1].x, goal.x, 0.01, "o caminho termina exatamente no destino (x)")
+	_near(path[path.size() - 1].y, goal.y, 0.01, "o caminho termina exatamente no destino (y)")
+	_check(pf.has_route(start, goal), "has_route concorda que existe rota")
+
+func _test_pathfinder_detours_around_solid() -> void:
+	var pf := _pf(10, 10, 32.0)
+	# parede vertical inteira em x=5, exceto um buraco em y=8 — só rota é dar a volta.
+	var wall: Array = []
+	for y in 8:
+		wall.append(Vector2i(5, y))
+	pf.rebuild(wall)
+
+	var start := Vector2(1 * 32.0 + 16.0, 1 * 32.0 + 16.0)
+	var goal := Vector2(8 * 32.0 + 16.0, 1 * 32.0 + 16.0)
+	_check(pf.has_route(start, goal), "existe rota contornando o buraco na parede")
+	var path := pf.find_path(start, goal)
+	var straight_line_blocked := not pf.line_is_clear(start, goal)
+	_check(straight_line_blocked, "a reta direta atravessa a parede (checagem do próprio teste)")
+	_check(path.size() >= 2, "o caminho contorna em vez de atravessar (mais de um ponto)")
+
+	var fully_walled := _pf(10, 10, 32.0)
+	var full_wall: Array = []
+	for y in 10:
+		full_wall.append(Vector2i(5, y))
+	fully_walled.rebuild(full_wall)
+	_check(not fully_walled.has_route(start, goal), "parede sem buraco nenhum: não existe rota")
+
+func _test_pathfinder_nearest_free() -> void:
+	var pf := _pf(10, 10, 32.0)
+	pf.rebuild([Vector2i(5, 5)])
+	_check(pf.nearest_free(Vector2i(5, 5)) != Vector2i(5, 5), "célula sólida não é devolvida como livre")
+	_check(not pf.is_solid(pf.nearest_free(Vector2i(5, 5))), "a célula livre mais próxima realmente não é sólida")
+	_check(pf.nearest_free(Vector2i(1, 1)) == Vector2i(1, 1), "célula já livre é devolvida sem mudança")
+
+func _test_pathfinder_trail_forms_and_decays() -> void:
+	var pf := _pf(10, 10, 32.0)
+	var cell := Vector2i(3, 3)
+	var pos := pf.center_of(cell)
+	for _i in int(Pathfinder.TRAIL_THRESHOLD) + 5:
+		pf.register_step(pos)
+	pf.decay(Pathfinder.REBUILD_INTERVAL + 0.01)
+	_check(pf.is_trail(cell), "célula pisada acima do limiar vira trilha depois do decay rodar")
+
+	# sem mais nenhum passo, um decay bem mais longo que o necessário apaga o desgaste
+	pf.decay(1000.0)
+	_check(not pf.is_trail(cell), "trilha sem uso volta a ser mato depois de tempo suficiente")
+
+# ---- Fase 2: trabalhadores (workers.gd / worker.gd) ----
+
+func _test_workers_spawn_and_arrive_close_target_immediately() -> void:
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2(100.0, 100.0))
+	_check(w.state == Worker.State.IDLE, "trabalhador nasce ocioso")
+	var pf := _pf()
+	mgr.send_to(w, Vector2(101.0, 100.0), pf)   # bem perto: dentro do raio de "já chegou"
+	_check(w.state == Worker.State.IDLE, "alvo pertinho e sem prédio vira IDLE na hora, sem gerar caminho")
+	_check(not w.has_path(), "não gerou caminho pra uma distância irrisória")
+
+func _test_workers_walk_and_arrive_exactly_at_target() -> void:
+	var mgr := Workers.new()
+	var pf := _pf()
+	var w := mgr.spawn(Vector2(16.0, 16.0))
+	w.job_building = 0   # simula alocação — chegando, vira WORKING, não IDLE
+	var target := Vector2(500.0, 500.0)
+	mgr.send_to(w, target, pf)
+	_check(w.state == Worker.State.WALKING, "alvo longe: trabalhador começa a andar")
+
+	var steps := 0
+	while w.state == Worker.State.WALKING and steps < 2000:
+		mgr.advance(1.0 / 30.0, pf)
+		steps += 1
+	_check(steps < 2000, "chega dentro de um teto razoável de passos (%d)" % steps)
+	_check(w.state == Worker.State.WORKING, "com job_building marcado, chegar vira WORKING")
+	_near(w.position.x, target.x, 0.5, "posição final bate exatamente com o alvo (x)")
+	_near(w.position.y, target.y, 0.5, "posição final bate exatamente com o alvo (y)")
+
+func _test_workers_move_independently() -> void:
+	var mgr := Workers.new()
+	var pf := _pf()
+	var a := mgr.spawn(Vector2(16.0, 16.0))
+	var b := mgr.spawn(Vector2(16.0, 16.0))
+	mgr.send_to(a, Vector2(600.0, 16.0), pf)
+	mgr.send_to(b, Vector2(16.0, 600.0), pf)
+	for _i in 30:
+		mgr.advance(1.0 / 30.0, pf)
+	_check(a.position != b.position, "trabalhadores em rotas diferentes não colam um no outro")
+	_check(a.position.y < 32.0, "trabalhador A anda na horizontal, não se desvia pra vertical")
+	_check(b.position.x < 32.0, "trabalhador B anda na vertical, não se desvia pra horizontal")
+
+# ---- Fase 2: prédios (buildings.gd) ----
+
+func _test_buildings_place_and_assign() -> void:
+	var b := Buildings.new()
+	var id_a := b.place(Buildings.Kind.LUMBERJACK, Vector2i(3, 3))
+	var id_b := b.place(Buildings.Kind.QUARRY, Vector2i(7, 7))
+	_check(id_a == 0 and id_b == 1, "ids sequenciais por ordem de construção")
+	_check(b.list[id_a].kind == Buildings.Kind.LUMBERJACK and b.list[id_a].cell == Vector2i(3, 3), "primeiro prédio guardado certo")
+
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(id_a, w)
+	_check(b.list[id_a].worker_id == w.id, "assign liga o prédio ao trabalhador")
+	_check(w.job_building == id_a, "assign liga o trabalhador ao prédio (mão dupla)")
+
+func _test_buildings_only_produce_when_worker_is_working() -> void:
+	var m := MapGen.new()
+	m.generate(20, 20, 9001)
+	var forest_cell := Buildings.nearest_deposit_cell(m, MapGen.Kind.FOREST, Vector2i(10, 10), 15)
+	_check(forest_cell.x >= 0, "o mapa de teste tem floresta a uma distância alcançável")
+	if forest_cell.x < 0:
+		return
+
+	var b := Buildings.new()
+	var building_id := b.place(Buildings.Kind.LUMBERJACK, forest_cell)
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+
+	b.advance(1.0, m, mgr)
+	_near(b.stock["madeira"], 0.0, 0.0001, "sem trabalhador alocado, prédio não produz nada")
+
+	b.assign(building_id, w)
+	w.state = Worker.State.WALKING
+	b.advance(1.0, m, mgr)
+	_near(b.stock["madeira"], 0.0, 0.0001, "alocado mas ainda a caminho (WALKING) não produz")
+
+	w.state = Worker.State.WORKING
+	b.advance(1.0, m, mgr)
+	_check(b.stock["madeira"] > 0.0, "trabalhador WORKING no prédio produz de verdade")
+
+func _test_buildings_production_stops_when_deposit_empties() -> void:
+	var m := MapGen.new()
+	m.generate(20, 20, 9001)
+	var forest_cell := Buildings.nearest_deposit_cell(m, MapGen.Kind.FOREST, Vector2i(10, 10), 15)
+	if forest_cell.x < 0:
+		return
+	var b := Buildings.new()
+	var building_id := b.place(Buildings.Kind.LUMBERJACK, forest_cell)
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(building_id, w)
+	w.state = Worker.State.WORKING
+
+	for _i in 200:
+		b.advance(1.0, m, mgr)
+	_check(m.deposit_at(forest_cell.x, forest_cell.y) == 0.0, "depósito esgota depois de tempo suficiente")
+	_check(m.kind_at(forest_cell.x, forest_cell.y) == MapGen.Kind.GRASS, "célula esgotada vira grama (mesma regra da Fase 1)")
+
+	var stock_before: float = b.stock["madeira"]
+	b.advance(5.0, m, mgr)
+	_near(b.stock["madeira"], stock_before, 0.0001, "depósito vazio: prédio para de produzir sozinho, sem erro")
+
+func _test_buildings_nearest_deposit_cell() -> void:
+	var m := MapGen.new()
+	m.generate(20, 20, 9001)
+	var forest_cell := Buildings.nearest_deposit_cell(m, MapGen.Kind.FOREST, Vector2i(10, 10), 15)
+	_check(forest_cell.x >= 0, "acha floresta dentro de um raio generoso")
+	if forest_cell.x >= 0:
+		_check(m.kind_at(forest_cell.x, forest_cell.y) == MapGen.Kind.FOREST, "a célula encontrada é mesmo do tipo pedido")
+		_check(Buildings.nearest_deposit_cell(m, MapGen.Kind.FOREST, forest_cell, 15) == forest_cell, "buscar a partir da própria célula devolve ela mesma")
+
+	# raio 0 só acha se a própria célula de partida já for do tipo pedido —
+	# escolhe deliberadamente uma célula que NÃO é floresta pra provar isso.
+	var not_forest := Vector2i(0, 0)
+	while m.kind_at(not_forest.x, not_forest.y) == MapGen.Kind.FOREST:
+		not_forest.x += 1
+	_check(Buildings.nearest_deposit_cell(m, MapGen.Kind.FOREST, not_forest, 0) == Vector2i(-1, -1), "raio 0 numa célula errada não acha nada")
+
+# ---- Fase 1+2: cena ----
 
 func _boot_main() -> Node:
 	var scene: PackedScene = load("res://scenes/main.tscn")
@@ -479,6 +675,29 @@ func _test_scene_pan_moves_camera_within_limits() -> void:
 	_check(main.camera.position.x <= main.camera.limit_right, "câmera não ultrapassa o limite direito por mais que se empurre")
 	_check(main.camera.position.x >= main.camera.limit_left, "câmera não ultrapassa o limite esquerdo")
 	_check(main.camera.position.y >= main.camera.limit_top and main.camera.position.y <= main.camera.limit_bottom, "câmera continua dentro dos limites verticais")
+
+	main.queue_free()
+	await process_frame
+
+func _test_scene_worker_arrives_and_produces() -> void:
+	var main := _boot_main()
+	await process_frame
+	_check(main.buildings.list.size() >= 1, "a cena consegue colocar pelo menos um prédio perto da vila")
+	_check(main.workers.list.size() == 1, "a cena nasce com um único trabalhador (Fase 2)")
+	var w = main.workers.list[0]
+	_check(w.job_building == 0, "o único trabalhador já nasce alocado no primeiro prédio")
+
+	var steps := 0
+	while w.state != Worker.State.WORKING and steps < 3000:
+		main._process(1.0 / 30.0)
+		steps += 1
+	_check(w.state == Worker.State.WORKING, "o trabalhador chega e começa a trabalhar dentro de um teto razoável")
+
+	var resource: String = Buildings.RESOURCE_OF[main.buildings.list[0].kind]
+	var before: float = main.buildings.stock[resource]
+	for _i in 60:
+		main._process(1.0 / 30.0)
+	_check(main.buildings.stock[resource] > before, "com o trabalhador no posto, o estoque cresce de verdade")
 
 	main.queue_free()
 	await process_frame
