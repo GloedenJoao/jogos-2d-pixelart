@@ -130,3 +130,19 @@ Estratégia: **flow field** para os destinos fixos mais visitados (calcula o cam
 1. Quebrar este design em fases pequenas e testáveis (padrão de todos os projetos anteriores: cada fase jogável e coberta por testes headless antes de avançar).
 2. Validar visualmente cada fase antes de seguir para a próxima (screenshots automáticos + revisão do João).
 3. Calibrar constantes de simulação (fluxo de água, tempos de trajeto, produção) com script de medição, não chute — lição já registrada de erros anteriores do projeto.
+
+## Fases planejadas
+
+Quebra do design acima em fases pequenas e testáveis, escrita em 2026-08-10 antes de começar a codar (item 1 dos próximos passos). Cada fase é headless-testável antes de ganhar visual, e cada fase ganha uma validação visual antes de a próxima começar.
+
+- **Fase 0 — Fundação técnica.** Scaffold do projeto Godot self-contained (`addons/framework/` copiado, projeto mínimo abrindo). Spike do sistema mais arriscado e mais novo do design — o autômato de água (escoamento, cavar canal, represar) — como classe sem dependência de cena, com testes headless e calibração da velocidade de escoamento por medição (ver [[reference_simulation_constants_need_measurement]]). Sem visual ainda: o objetivo é provar que a mecânica central de terraplanagem funciona antes de desenhar qualquer tela em cima dela.
+- **Fase 1 — Mapa e exploração.** Terreno com relevo (a altura que o `water_sim` já consome), depósitos de recursos visíveis no chão, câmera navegável, nevoeiro de guerra. Primeira validação visual do projeto.
+- **Fase 2 — Extração + trabalhador único.** Um ou dois prédios extratores (ex.: Posto de Lenhador, Captação de Água), alocação de um trabalhador por prédio, produção headless testável.
+- **Fase 3 — Transporte.** NPC carregador levando recursos do extrator ao armazém, reaproveitando agente + pathfinder da Colônia V2.
+- **Fase 4 — Processamento.** Cadeia bruto → processado (Serraria, Forja, Oficina de Pedra).
+- **Fase 5 — Energia.** Geradores (lenha, roda d'água, vento), cabo direto e distribuidor por raio; regra de energia OU trabalhador.
+- **Fase 6 — População e habitação.** Casa, teto de trabalhadores, necessidades (comida, água potável, descanso) consumindo produção.
+- **Fase 7 — Progressão.** Prefeitura por níveis, desbloqueio de prédios e alcance de exploração.
+- **Fase 8+ — Escala e polimento.** Flow field para destinos fixos de tráfego denso (armazém, poço), engenharia de água mais rica (comportas), balanceamento de recursos/alimentação, áudio.
+
+Fases 1+ podem ser reordenadas ou fundidas conforme a implementação mostrar o que faz sentido jogar primeiro; a ordem acima é a leitura mais direta do loop principal, não um contrato fechado.
