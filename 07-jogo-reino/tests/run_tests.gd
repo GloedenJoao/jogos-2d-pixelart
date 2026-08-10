@@ -411,6 +411,13 @@ func _test_scene_boots() -> void:
 	_check(main.map.cols == MAP_COLS and main.map.rows == MAP_ROWS, "a cena gera o mapa com as dimensões esperadas")
 	_check(main.fog.explored_count() > 0, "a cena já revela a área inicial ao redor da vila")
 	_check(is_instance_valid(main.camera) and main.camera.is_current(), "a câmera existe e está ativa")
+	_check(main.water_sim.total_water() > 0.0, "a cena semeia pelo menos um lago")
+	var wet := 0
+	for v in main.water_sim.water:
+		if v > 0.05:
+			wet += 1
+	var coverage: float = float(wet) / float(main.water_sim.water.size())
+	_check(coverage > 0.005 and coverage < 0.15, "cobertura de lago é lago, não poça nem inundação (%.1f%%)" % (coverage * 100.0))
 	main.queue_free()
 	await process_frame
 
