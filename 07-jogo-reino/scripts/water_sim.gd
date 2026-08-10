@@ -125,10 +125,26 @@ func advance(delta: float) -> int:
 
 func _tick() -> void:
 	var n := cols * rows
-	var net := PackedFloat32Array()
-	net.resize(n)
 
-	for edge in _edges:
+	# Passo 1: cada aresta decide um fluxo DESEJADO, sem olhar pras outras
+	# arestas da mesma célula. Numa grade 1D (só usada nos primeiros testes da
+	# Fase 0, onde cada célula tem no máximo 2 vizinhos) isso nunca estourava
+	# o estoque. Numa grade 2D de verdade uma célula pode ter 3 ou 4 vizinhos
+	# mais baixos ao mesmo tempo — um pico cercado por um vale nos quatro
+	# lados —, e a soma dos fluxos desejados PODE passar do que a célula
+	# realmente tem. Foi exatamente esse caso que a suíte da Fase 1 pegou
+	# (água "nascendo" num mapa 60×40 gerado, coisa que nenhuma das linhas
+	# retas da Fase 0 tinha como expor): o código antigo cortava o fluxo de
+	# saída em `maxf(0.0, água)` só do lado de quem manda, mas os vizinhos que
+	# recebiam já tinham sido creditados com o valor cheio — água aparecia do
+	# nada exatamente na diferença entre o que devia sair e o que existia.
+	var desired := PackedFloat32Array()
+	desired.resize(_edges.size())
+	var wanted_out := PackedFloat32Array()
+	wanted_out.resize(n)
+
+	for i in _edges.size():
+		var edge: PackedInt32Array = _edges[i]
 		var a: int = edge[0]
 		var b: int = edge[1]
 		if blocked[a] or blocked[b]:
@@ -143,19 +159,43 @@ func _tick() -> void:
 		# manda menos, e o próximo tick devolveria o fluxo — oscilação sem
 		# fim). FLOW_RATE morde uma fração desse teto, então mesmo no valor
 		# máximo (0.5) o resultado é "chegam exatamente à igualdade", nunca
-		# ultrapassam.
-		var cap: float = diff * 0.5
-		var flow: float = cap * FLOW_RATE
-		if diff > 0.0:
-			flow = minf(flow, water[a])
+		# ultrapassam — isto continua valendo por aresta; o passo 2 é o que
+		# agora garante que também vale por CÉLULA.
+		var flow: float = diff * 0.5 * FLOW_RATE
+		desired[i] = flow
+		if flow > 0.0:
+			wanted_out[a] += flow
 		else:
-			flow = maxf(flow, -water[b])
-		net[a] -= flow
-		net[b] += flow
+			wanted_out[b] += -flow
+
+	# Passo 2: se uma célula prometeu mandar mais do que tem, encolhe TODAS as
+	# suas arestas de saída na mesma proporção. Isso preserva a direção de
+	# cada fluxo (quem recebia mais continua recebendo mais) e garante que a
+	# célula nunca manda mais do que possui.
+	var scale := PackedFloat32Array()
+	scale.resize(n)
+	for idx in n:
+		scale[idx] = 1.0 if wanted_out[idx] <= water[idx] or wanted_out[idx] <= 0.0 else water[idx] / wanted_out[idx]
+
+	var net := PackedFloat32Array()
+	net.resize(n)
+	for i in _edges.size():
+		var flow: float = desired[i]
+		if flow == 0.0:
+			continue
+		var edge: PackedInt32Array = _edges[i]
+		var a: int = edge[0]
+		var b: int = edge[1]
+		var actual: float = flow * scale[a] if flow > 0.0 else flow * scale[b]
+		net[a] -= actual
+		net[b] += actual
 
 	for idx in n:
 		if net[idx] == 0.0:
 			continue
+		# `maxf` continua aqui como cinto de segurança contra erro de
+		# arredondamento de ponto flutuante, não como o mecanismo que evita
+		# estouro — esse agora é o `scale` acima.
 		water[idx] = maxf(0.0, water[idx] + net[idx])
 
 	elapsed += TICK
