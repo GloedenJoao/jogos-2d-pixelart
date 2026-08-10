@@ -6,10 +6,15 @@ extends Node2D
 # fases seguintes vão construir em cima, e que altura/depósito/névoa
 # funcionam juntos antes de existir qualquer prédio.
 #
-# A água (Fase 0) não aparece aqui: a integração que esta fase garante é só
-# "a altura que o MapGen gera serve pro WaterSim consumir sem adaptação"
-# (ver tests/run_tests.gd _test_map_height_feeds_water_sim). Rios de verdade
-# entram quando houver captação de água pra motivar mostrá-los.
+# A água (Fase 0) aparece como lagos nos pontos baixos do relevo: semeada nas
+# células mais baixas do mapa gerado e deixada acomodar pelo autômato de
+# verdade antes do primeiro desenho — não é uma cor pintada por cima do
+# relevo, é o mesmo WaterSim.water_at() que a Fase 0 testou. Ainda não dá pra
+# cavar canal nem represar aqui (isso pede uma ferramenta de jogador, que é
+# Fase 2+); o que esta fase entrega é a prova visual de que "a altura que o
+# MapGen gera serve pro WaterSim consumir sem adaptação" (ver
+# tests/run_tests.gd _test_map_height_feeds_water_sim) é mais do que uma
+# afirmação de teste.
 
 const TILE_SIZE := 16
 const DISPLAY_SCALE := 2
@@ -41,10 +46,36 @@ const SCOUT_RADIUS := 6.0
 const C_FOG_UNSEEN := Color(0.0, 0.0, 0.0, 0.93)
 const C_FOG_EXPLORED := Color(0.0, 0.0, 0.0, 0.45)
 
+# --- lagos (ver comentário no topo do arquivo) ---
+# Fração mais baixa do relevo que vira "leito de lago em potencial", e quanto
+# semear em cada célula candidata. Medidos rodando o autômato de verdade e
+# contando célula molhada no fim, não chutados: a primeira tentativa (22% do
+# relevo, 3 unidades por célula) parecia razoável olhando só a CONTAGEM DE
+# SEMENTES, mas depois de acomodar o autômato espalhava a água até 29% do
+# mapa — inundação, não lago. 6%/1,2 acomoda em ~4% do mapa (algumas lagoas
+# distintas), que é a leitura visual que "lago" pede.
+const LAKE_HEIGHT_FRACTION := 0.06
+const LAKE_SEED_AMOUNT := 1.2
+# Só em grama: semear em cima de floresta/pedra/colina desenharia árvore ou
+# pedra boiando na água — os dois sistemas ainda não conversam sobre isso, e
+# não é o que esta fase promete resolver.
+#
+# O acomodamento converge rápido (a diferença de superfície cai pela metade a
+# cada tick, ver water_sim.gd) — medido parando de mudar por volta do tick 50
+# neste mapa; 150 sobra de margem sem custar o segundo e meio que 600 custava
+# no carregamento da cena.
+const LAKE_SETTLE_TICKS := 150
+const C_WATER_DEEP := Color("2a5f8a")
+const C_WATER_SHALLOW := Color("5b9bd1")
+const WATER_VISIBLE_MIN := 0.05
+const WATER_DEPTH_REFERENCE := 2.0   # água nesse volume (ou mais) já desenha na cor mais funda
+
 var map := MapGen.new()
 var fog := Fog.new()
+var water_sim := WaterSim.new()
 var camera: Camera2D
 var _fog_layer: Node2D
+var _water_layer: Node2D
 var _vision_sources: Array = []
 
 var _town_source_id := -1
@@ -53,6 +84,7 @@ var _dungeon_source_id := -1
 func _ready() -> void:
 	map.generate(MAP_COLS, MAP_ROWS, MAP_SEED)
 	fog.setup(MAP_COLS, MAP_ROWS)
+	_seed_lakes()
 
 	_build_world()
 	_build_hud()
@@ -63,6 +95,29 @@ func _ready() -> void:
 	_fog_layer.queue_redraw()
 
 	camera.position = Vector2(start) * CELL
+
+# Semeia água nas células mais baixas do relevo e deixa o WaterSim acomodar
+# ANTES do primeiro frame — os lagos já nascem em equilíbrio, sem o jogador
+# ver a água "se arrumando" na primeira tela.
+func _seed_lakes() -> void:
+	water_sim.setup(map.cols, map.rows, map.height)
+
+	var lowest: float = map.height[0]
+	var highest: float = map.height[0]
+	for h in map.height:
+		lowest = minf(lowest, h)
+		highest = maxf(highest, h)
+	var threshold: float = lowest + (highest - lowest) * LAKE_HEIGHT_FRACTION
+
+	for y in map.rows:
+		for x in map.cols:
+			if map.kind_at(x, y) != MapGen.Kind.GRASS:
+				continue
+			if map.height_at(x, y) <= threshold:
+				water_sim.add_water(x, y, LAKE_SEED_AMOUNT)
+
+	for _i in LAKE_SETTLE_TICKS:
+		water_sim.advance(WaterSim.TICK)
 
 func _process(delta: float) -> void:
 	map.advance(delta)
@@ -175,6 +230,12 @@ func _build_world() -> void:
 				MapGen.Kind.HILLS:
 					deposits.set_cell(pos, _dungeon_source_id, T_ROCK, ALT_ORE)
 
+	_water_layer = Node2D.new()
+	_water_layer.name = "WaterLayer"
+	_water_layer.draw.connect(_draw_water)
+	world.add_child(_water_layer)
+	_water_layer.queue_redraw()
+
 	_fog_layer = Node2D.new()
 	_fog_layer.name = "FogLayer"
 	_fog_layer.draw.connect(_draw_fog)
@@ -188,6 +249,16 @@ func _build_world() -> void:
 	camera.limit_bottom = MAP_ROWS * CELL
 	world.add_child(camera)
 	camera.make_current()
+
+func _draw_water() -> void:
+	for y in water_sim.rows:
+		for x in water_sim.cols:
+			var depth: float = water_sim.water_at(x, y)
+			if depth < WATER_VISIBLE_MIN:
+				continue
+			var rect := Rect2(x * CELL, y * CELL, CELL, CELL)
+			var t: float = clampf(depth / WATER_DEPTH_REFERENCE, 0.0, 1.0)
+			_water_layer.draw_rect(rect, C_WATER_SHALLOW.lerp(C_WATER_DEEP, t))
 
 func _draw_fog() -> void:
 	for y in fog.rows:
