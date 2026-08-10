@@ -1,20 +1,16 @@
 extends Node2D
 
-# Fase 1: primeira tela do Reino. Mapa com relevo e depósitos (MapGen),
-# nevoeiro de guerra (Fog), câmera navegável. Ainda não há economia nem
-# trabalhadores — o ponto desta fase é provar que dá pra OLHAR o mapa que as
-# fases seguintes vão construir em cima, e que altura/depósito/névoa
-# funcionam juntos antes de existir qualquer prédio.
+# Fase 2: o primeiro ciclo econômico de verdade em cima do mapa da Fase 1.
+# Um Posto de Lenhador e uma Pedreira nascem na célula de depósito mais
+# próxima da vila; UM trabalhador é alocado a um deles, anda até lá pelo
+# Pathfinder (A* + trilha de pisoteio, portado da Colônia V2) e só produz
+# quando chega e fica WORKING de verdade — "alocado" não é "produzindo", o
+# trajeto custa tempo, igual o plano do projeto pede. `Buildings.advance`
+# drena direto o depósito do MapGen (mesmo estoque da Fase 1: sem
+# contabilidade duplicada, e o depósito ainda esgota do mesmo jeito).
 #
-# A água (Fase 0) aparece como lagos nos pontos baixos do relevo: semeada nas
-# células mais baixas do mapa gerado e deixada acomodar pelo autômato de
-# verdade antes do primeiro desenho — não é uma cor pintada por cima do
-# relevo, é o mesmo WaterSim.water_at() que a Fase 0 testou. Ainda não dá pra
-# cavar canal nem represar aqui (isso pede uma ferramenta de jogador, que é
-# Fase 2+); o que esta fase entrega é a prova visual de que "a altura que o
-# MapGen gera serve pro WaterSim consumir sem adaptação" (ver
-# tests/run_tests.gd _test_map_height_feeds_water_sim) é mais do que uma
-# afirmação de teste.
+# Mapa, névoa e lagos continuam da Fase 1 sem mudança de arquitetura — ver o
+# histórico dessas partes em docs/plano-projeto7-reino.md.
 
 const TILE_SIZE := 16
 const DISPLAY_SCALE := 2
@@ -70,31 +66,102 @@ const C_WATER_SHALLOW := Color("5b9bd1")
 const WATER_VISIBLE_MIN := 0.05
 const WATER_DEPTH_REFERENCE := 2.0   # água nesse volume (ou mais) já desenha na cor mais funda
 
+# --- Fase 2: prédio + trabalhador ---
+const BUILDING_SEARCH_RADIUS := 20   # em células, a partir da vila
+const CHAR_TEXTURE_PATH := "res://assets/characters/roguelikeChar_transparent.png"
+const CHAR_TILE := 16
+const CHAR_MARGIN := 1
+const CHAR_COORD := Vector2i(0, 5)   # um personagem fixo — só 1 trabalhador na Fase 2
+const WORKER_SCALE := 2.0
+const C_BUILDING := {
+	Buildings.Kind.LUMBERJACK: Color("8a5a34"),
+	Buildings.Kind.QUARRY: Color("8a8a94"),
+}
+const C_BUILDING_ROOF := {
+	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
+	Buildings.Kind.QUARRY: Color("5a5a63"),
+}
+const STATE_COLORS := {
+	Worker.State.IDLE: Color("cfcfcf"),
+	Worker.State.WALKING: Color("9fd0ff"),
+	Worker.State.WORKING: Color("ffd166"),
+}
+
 var map := MapGen.new()
 var fog := Fog.new()
 var water_sim := WaterSim.new()
+var pathfinder := Pathfinder.new()
+var buildings := Buildings.new()
+var workers := Workers.new()
 var camera: Camera2D
 var _fog_layer: Node2D
 var _water_layer: Node2D
+var _buildings_root: Node2D
+var _workers_root: Node2D
+var _worker_nodes: Dictionary = {}   # Worker.id -> Node2D
 var _vision_sources: Array = []
+var _stock_label: Label
 
 var _town_source_id := -1
 var _dungeon_source_id := -1
+var _char_texture: Texture2D
+var _state_dot_texture: Texture2D
 
 func _ready() -> void:
+	_char_texture = load(CHAR_TEXTURE_PATH)
+	_state_dot_texture = _build_state_dot()
+
 	map.generate(MAP_COLS, MAP_ROWS, MAP_SEED)
 	fog.setup(MAP_COLS, MAP_ROWS)
 	_seed_lakes()
 
+	var start := Vector2i(MAP_COLS / 2, MAP_ROWS / 2)
+	pathfinder.setup(MAP_COLS, MAP_ROWS, CELL)
+	_place_starting_buildings(start)
+
 	_build_world()
 	_build_hud()
 
-	var start := Vector2i(MAP_COLS / 2, MAP_ROWS / 2)
+	var worker := workers.spawn(Vector2(start) * CELL)
+	if not buildings.list.is_empty():
+		buildings.assign(0, worker)
+		workers.send_to(worker, _work_spot_for(buildings.list[0]), pathfinder)
+	_spawn_worker_node(worker)
+
 	_vision_sources.append(Vector3(start.x, start.y, START_REVEAL_RADIUS))
 	fog.update_visibility(_vision_sources)
 	_fog_layer.queue_redraw()
 
 	camera.position = Vector2(start) * CELL
+
+# Coloca um Posto de Lenhador e uma Pedreira na célula de depósito mais
+# próxima da vila (busca em anéis, ver Buildings.nearest_deposit_cell). Uma
+# semente de mapa sem floresta/pedra por perto simplesmente não ganha aquele
+# prédio agora — não é erro, é o jogo dizendo "explore mais" (mesma ideia do
+# plano: "depósito se esgota → motiva avançar pelo mapa").
+func _place_starting_buildings(start: Vector2i) -> void:
+	var forest_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.FOREST, start, BUILDING_SEARCH_RADIUS)
+	if forest_cell.x >= 0:
+		buildings.place(Buildings.Kind.LUMBERJACK, forest_cell)
+	var stone_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.STONE, start, BUILDING_SEARCH_RADIUS)
+	if stone_cell.x >= 0:
+		buildings.place(Buildings.Kind.QUARRY, stone_cell)
+
+	var solids: Array = []
+	for building in buildings.list:
+		solids.append(building.cell)
+	pathfinder.rebuild(solids)
+
+# Onde o trabalhador para: DUAS células abaixo do prédio, não em cima nem
+# colado nele — o prédio é sólido no pathfinder (ninguém anda por cima), e
+# o corpo do trabalhador é mais alto que uma célula (ancorado pelos pés,
+# ver _spawn_worker_node), então parar na célula logo abaixo ainda tampava o
+# prédio quase inteiro atrás da cabeça.
+func _work_spot_for(building: Buildings.Building) -> Vector2:
+	var cell := building.cell + Vector2i(0, 2)
+	if not map.inside(cell.x, cell.y) or pathfinder.is_solid(cell):
+		cell = building.cell + Vector2i(0, -2)
+	return Vector2(cell) * CELL + Vector2(CELL, CELL) * 0.5
 
 # Semeia água nas células mais baixas do relevo e deixa o WaterSim acomodar
 # ANTES do primeiro frame — os lagos já nascem em equilíbrio, sem o jogador
@@ -121,6 +188,11 @@ func _seed_lakes() -> void:
 
 func _process(delta: float) -> void:
 	map.advance(delta)
+	workers.advance(delta, pathfinder)
+	buildings.advance(delta, map, workers)
+	pathfinder.decay(delta)
+	_sync_worker_nodes()
+	_update_hud()
 	_pan_with_keys(delta)
 
 func _pan_with_keys(delta: float) -> void:
@@ -236,6 +308,16 @@ func _build_world() -> void:
 	world.add_child(_water_layer)
 	_water_layer.queue_redraw()
 
+	_buildings_root = Node2D.new()
+	_buildings_root.name = "Buildings"
+	world.add_child(_buildings_root)
+	for building in buildings.list:
+		_buildings_root.add_child(_make_building_node(building))
+
+	_workers_root = Node2D.new()
+	_workers_root.name = "Workers"
+	world.add_child(_workers_root)
+
 	_fog_layer = Node2D.new()
 	_fog_layer.name = "FogLayer"
 	_fog_layer.draw.connect(_draw_fog)
@@ -275,8 +357,99 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção — Fase 1 (mapa)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção — Fase 2 (extração)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
 	canvas.add_child(label)
+
+	_stock_label = Label.new()
+	_stock_label.name = "Stock"
+	_stock_label.position = Vector2(16, 56)
+	if UITheme and UITheme.theme:
+		_stock_label.theme = UITheme.theme
+	canvas.add_child(_stock_label)
+	_update_hud()
+
+func _update_hud() -> void:
+	if _stock_label == null:
+		return
+	_stock_label.text = "madeira: %.1f    pedra: %.1f" % [buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0)]
+
+# ---- Fase 2: prédios e trabalhador ----
+
+# Sem sprite de prédio pronto no acervo (Tiny Town/Tiny Dungeon são chão e
+# masmorra, não construções isoladas) — um retângulo com "telhado" gerado por
+# código é suficiente pra distinguir tipo por cor nesta fase, no mesmo
+# espírito do marcador de ouro do roguelike (02-jogo-roguelike/scenes/main.gd
+# _make_gold_marker): melhor um placeholder legível do que adivinhar
+# coordenada de tileset errada de novo (foi o que quase aconteceu com a
+# pedra/minério na Fase 1).
+func _make_building_node(building: Buildings.Building) -> Node2D:
+	var node := Node2D.new()
+	node.position = Vector2(building.cell) * CELL
+
+	var base := ColorRect.new()
+	base.size = Vector2(CELL, CELL) * 0.8
+	base.position = Vector2(CELL, CELL) * 0.1
+	base.color = C_BUILDING[building.kind]
+	node.add_child(base)
+
+	var roof := ColorRect.new()
+	roof.size = Vector2(CELL * 0.9, CELL * 0.35)
+	roof.position = Vector2(CELL * 0.05, CELL * 0.05)
+	roof.color = C_BUILDING_ROOF[building.kind]
+	node.add_child(roof)
+
+	return node
+
+func _spawn_worker_node(w: Worker) -> void:
+	var node := Node2D.new()
+
+	var body := Sprite2D.new()
+	body.name = "Corpo"
+	body.texture = _char_texture
+	body.region_enabled = true
+	body.region_rect = Rect2(
+		CHAR_COORD.x * (CHAR_TILE + CHAR_MARGIN), CHAR_COORD.y * (CHAR_TILE + CHAR_MARGIN),
+		CHAR_TILE, CHAR_TILE
+	)
+	body.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	body.scale = Vector2(WORKER_SCALE, WORKER_SCALE)
+	body.centered = false
+	# Ancorado pelos pés, não pela cabeça — ver 05-jogo-colonia/scenes/main.gd.
+	body.position = Vector2(-CHAR_TILE * WORKER_SCALE * 0.5, -CHAR_TILE * WORKER_SCALE)
+	node.add_child(body)
+
+	var mark := Sprite2D.new()
+	mark.name = "Estado"
+	mark.texture = _state_dot_texture
+	mark.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	mark.scale = Vector2(2, 2)
+	mark.position = Vector2(0, -CHAR_TILE * WORKER_SCALE - 11)
+	node.add_child(mark)
+
+	_workers_root.add_child(node)
+	_worker_nodes[w.id] = node
+	_sync_worker_node(w, node)
+
+func _sync_worker_nodes() -> void:
+	for w in workers.list:
+		var node: Node2D = _worker_nodes.get(w.id)
+		if node:
+			_sync_worker_node(w, node)
+
+func _sync_worker_node(w: Worker, node: Node2D) -> void:
+	node.position = w.position
+	node.get_node("Estado").modulate = STATE_COLORS.get(w.state, Color.WHITE)
+
+func _build_state_dot() -> Texture2D:
+	var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	for y in 8:
+		for x in 8:
+			var d := Vector2(x - 3.5, y - 3.5).length()
+			if d <= 3.6:
+				img.set_pixel(x, y, Color.WHITE if d <= 2.4 else Color(0, 0, 0, 0.85))
+			else:
+				img.set_pixel(x, y, Color(0, 0, 0, 0))
+	return ImageTexture.create_from_image(img)
