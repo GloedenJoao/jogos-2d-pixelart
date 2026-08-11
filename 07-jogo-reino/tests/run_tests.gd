@@ -683,21 +683,25 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	var main := _boot_main()
 	await process_frame
 	_check(main.buildings.list.size() >= 1, "a cena consegue colocar pelo menos um prédio perto da vila")
-	_check(main.workers.list.size() == 1, "a cena nasce com um único trabalhador (Fase 2)")
-	var w = main.workers.list[0]
-	_check(w.job_building == 0, "o único trabalhador já nasce alocado no primeiro prédio")
+	_check(main.workers.list.size() == main.buildings.list.size(), "um trabalhador nasce por prédio, nenhum fica sem gente")
+	for i in main.workers.list.size():
+		_check(main.workers.list[i].job_building == i, "trabalhador %d já nasce alocado no prédio %d" % [i, i])
 
 	var steps := 0
-	while w.state != Worker.State.WORKING and steps < 3000:
+	while steps < 3000 and not main.workers.list.all(func(w): return w.state == Worker.State.WORKING):
 		main._process(1.0 / 30.0)
 		steps += 1
-	_check(w.state == Worker.State.WORKING, "o trabalhador chega e começa a trabalhar dentro de um teto razoável")
+	for w in main.workers.list:
+		_check(w.state == Worker.State.WORKING, "todo trabalhador chega e começa a trabalhar dentro de um teto razoável")
 
-	var resource: String = Buildings.RESOURCE_OF[main.buildings.list[0].kind]
-	var before: float = main.buildings.stock[resource]
+	var before := {}
+	for resource in main.buildings.stock:
+		before[resource] = main.buildings.stock[resource]
 	for _i in 60:
 		main._process(1.0 / 30.0)
-	_check(main.buildings.stock[resource] > before, "com o trabalhador no posto, o estoque cresce de verdade")
+	for building in main.buildings.list:
+		var resource: String = Buildings.RESOURCE_OF[building.kind]
+		_check(main.buildings.stock[resource] > before[resource], "com trabalhador no posto, o estoque de %s cresce de verdade" % resource)
 
 	main.queue_free()
 	await process_frame

@@ -2,7 +2,7 @@ extends Node2D
 
 # Fase 2: o primeiro ciclo econômico de verdade em cima do mapa da Fase 1.
 # Um Posto de Lenhador e uma Pedreira nascem na célula de depósito mais
-# próxima da vila; UM trabalhador é alocado a um deles, anda até lá pelo
+# próxima da vila; um trabalhador é alocado por prédio, anda até lá pelo
 # Pathfinder (A* + trilha de pisoteio, portado da Colônia V2) e só produz
 # quando chega e fica WORKING de verdade — "alocado" não é "produzindo", o
 # trajeto custa tempo, igual o plano do projeto pede. `Buildings.advance`
@@ -71,7 +71,10 @@ const BUILDING_SEARCH_RADIUS := 20   # em células, a partir da vila
 const CHAR_TEXTURE_PATH := "res://assets/characters/roguelikeChar_transparent.png"
 const CHAR_TILE := 16
 const CHAR_MARGIN := 1
-const CHAR_COORD := Vector2i(0, 5)   # um personagem fixo — só 1 trabalhador na Fase 2
+# Um rosto por trabalhador, não clone — mesmo elenco do 05-jogo-colonia
+# (scenes/main.gd CHAR_CAST), só os dois primeiros: agora são dois NPCs, um
+# por prédio.
+const CHAR_CAST := [Vector2i(0, 5), Vector2i(1, 5)]
 const WORKER_SCALE := 2.0
 # A Pedreira nasce EM CIMA de uma célula de pedra (ver
 # Buildings.nearest_deposit_cell) — um marcador em tom de pedra ficava quase
@@ -132,11 +135,17 @@ func _ready() -> void:
 	_build_world()
 	_build_hud()
 
-	var worker := workers.spawn(Vector2(start) * CELL)
-	if not buildings.list.is_empty():
-		buildings.assign(0, worker)
-		workers.send_to(worker, _work_spot_for(buildings.list[0]), pathfinder)
-	_spawn_worker_node(worker)
+	# Um trabalhador por prédio: a Fase 2 nasceu com "um trabalhador único" no
+	# escopo, mas isso deixava metade dos extratores plantados no mapa sem
+	# nunca produzir nada — pra quem está jogando, prédio parado e prédio
+	# inexistente parecem a mesma coisa. Continua sendo "um trabalhador por
+	# posto", não staffing fracionário: isso só passaria a valer a pena com
+	# múltiplas vagas por prédio (ver o comentário em buildings.gd).
+	for i in buildings.list.size():
+		var worker := workers.spawn(Vector2(start) * CELL)
+		buildings.assign(i, worker)
+		workers.send_to(worker, _work_spot_for(buildings.list[i]), pathfinder)
+		_spawn_worker_node(worker)
 
 	_vision_sources.append(Vector3(start.x, start.y, START_REVEAL_RADIUS))
 	fog.update_visibility(_vision_sources)
@@ -428,8 +437,9 @@ func _spawn_worker_node(w: Worker) -> void:
 	body.name = "Corpo"
 	body.texture = _char_texture
 	body.region_enabled = true
+	var coord: Vector2i = CHAR_CAST[w.id % CHAR_CAST.size()]
 	body.region_rect = Rect2(
-		CHAR_COORD.x * (CHAR_TILE + CHAR_MARGIN), CHAR_COORD.y * (CHAR_TILE + CHAR_MARGIN),
+		coord.x * (CHAR_TILE + CHAR_MARGIN), coord.y * (CHAR_TILE + CHAR_MARGIN),
 		CHAR_TILE, CHAR_TILE
 	)
 	body.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST

@@ -24,17 +24,23 @@ func _initialize() -> void:
 
 	await _capture("01_vila_inicial", main)
 
-	# Zoom no prédio + trabalhador (Fase 2): centraliza no primeiro prédio e
-	# avança a simulação até o trabalhador chegar e começar a trabalhar.
+	# Zoom nos prédios + trabalhadores (Fase 2): centraliza entre eles e avança
+	# a simulação até TODOS os trabalhadores chegarem e começarem a trabalhar
+	# — um único prédio ficar de fora do enquadramento (ou de pé, esperando)
+	# foi exatamente o que confundiu o João da primeira vez.
 	if not main.buildings.list.is_empty():
-		main.camera.zoom = Vector2(1.4, 1.4)
-		main.camera.position = Vector2(main.buildings.list[0].cell) * float(main.CELL)
+		var mid := Vector2.ZERO
+		for building in main.buildings.list:
+			mid += Vector2(building.cell)
+		mid = mid / float(main.buildings.list.size()) * float(main.CELL)
+		main.camera.zoom = Vector2(1.1, 1.1)
+		main.camera.position = mid
 		var steps := 0
-		while main.workers.list[0].state != Worker.State.WORKING and steps < 3000:
+		while steps < 3000 and not main.workers.list.all(func(w): return w.state == Worker.State.WORKING):
 			main._process(1.0 / 30.0)
 			steps += 1
 		await process_frame
-		await _capture("02_trabalhador_no_posto", main)
+		await _capture("02_trabalhadores_nos_postos", main)
 
 	# Explora um pedaço bem longe da vila, pra mostrar a névoa recuando de
 	# verdade em vez de só a área que já nasce revelada.
