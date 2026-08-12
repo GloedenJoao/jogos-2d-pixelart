@@ -90,6 +90,12 @@ func _initialize() -> void:
 	_test_population_employ_respects_availability()
 	_test_population_available_grows_as_count_grows()
 
+	_test_progression_starts_at_level_one()
+	_test_progression_levels_up_and_carries_remainder()
+	_test_progression_handles_multiple_levels_in_one_jump()
+	_test_progression_ignores_zero_and_negative_xp()
+	_test_progression_caps_at_max_defined_level()
+
 	_test_carrier_picks_the_fullest_buffer()
 	_test_carrier_full_round_trip_delivers_to_warehouse()
 	_test_carrier_ignores_buffers_below_min_pickup()
@@ -101,6 +107,7 @@ func _initialize() -> void:
 	await _test_scene_pan_moves_camera_within_limits()
 	await _test_scene_worker_arrives_and_produces()
 	await _test_scene_population_grows_up_to_two_houses()
+	await _test_scene_progression_grows_reveal_radius()
 	await _test_scene_carrier_delivers_to_warehouse()
 	await _test_scene_processing_chain_produces_tabua_and_bloco()
 
@@ -875,6 +882,43 @@ func _test_population_available_grows_as_count_grows() -> void:
 	p.advance(1.0 / Population.GROWTH_PER_SECOND, 10)   # ~1.0 de população
 	_check(p.available() >= 1, "depois de crescer o suficiente, sobra gente disponível pra empregar")
 
+# ---- Fase 7: progressão (progression.gd) ----
+
+func _test_progression_starts_at_level_one() -> void:
+	var p := Progression.new()
+	_check(p.level == 1, "vila nasce no nível 1")
+	_check(p.xp == 0.0, "sem XP nenhum no início")
+	_near(p.reveal_radius(), Progression.REVEAL_RADIUS_BY_LEVEL[1], 0.0001, "alcance do nível 1 bate com a tabela")
+
+func _test_progression_levels_up_and_carries_remainder() -> void:
+	var p := Progression.new()
+	p.add_xp(Progression.XP_PER_LEVEL - 5.0)
+	_check(p.level == 1, "ainda não bateu o teto do nível, continua no 1")
+	p.add_xp(10.0)   # passa do teto por 5 de sobra
+	_check(p.level == 2, "cruzar o teto de XP sobe de nível")
+	_near(p.xp, 5.0, 0.0001, "o excedente vira XP do próximo nível, não é descartado")
+	_near(p.reveal_radius(), Progression.REVEAL_RADIUS_BY_LEVEL[2], 0.0001, "alcance já reflete o nível novo")
+
+func _test_progression_handles_multiple_levels_in_one_jump() -> void:
+	var p := Progression.new()
+	p.add_xp(Progression.XP_PER_LEVEL * 3.0 + 7.0)
+	_check(p.level == 4, "um ganho grande de XP de uma vez pode subir vários níveis no mesmo passo")
+	_near(p.xp, 7.0, 0.0001, "sobra exatamente o resto depois de pagar os 3 níveis")
+
+func _test_progression_ignores_zero_and_negative_xp() -> void:
+	var p := Progression.new()
+	p.add_xp(0.0)
+	p.add_xp(-10.0)
+	_check(p.level == 1 and p.xp == 0.0, "XP zero ou negativo não faz nada (nem crasha)")
+
+func _test_progression_caps_at_max_defined_level() -> void:
+	var p := Progression.new()
+	var max_level: int = Progression.REVEAL_RADIUS_BY_LEVEL.keys().max()
+	p.add_xp(Progression.XP_PER_LEVEL * 100.0)   # XP muito além de qualquer nível definido
+	_check(p.level == max_level, "não sobe além do último nível que a tabela define")
+	_check(p.is_max_level(), "is_max_level() concorda que chegou ao teto")
+	_near(p.reveal_radius(), Progression.REVEAL_RADIUS_BY_LEVEL[max_level], 0.0001, "alcance trava no valor do nível máximo")
+
 # ---- Fase 3: carregador (carrier.gd / carriers.gd) ----
 
 func _open_pathfinder(cols: int = 20, rows: int = 20, cell: float = 32.0) -> Pathfinder:
@@ -1109,6 +1153,25 @@ func _test_scene_population_grows_up_to_two_houses() -> void:
 		main._process(1.0 / 30.0)
 	_near(main.population.count, float(main.buildings.housing_capacity()), 0.01, "com tempo suficiente, população enche exatamente a capacidade habitacional")
 	_check(main.population.employed() <= main.buildings.housing_capacity(), "nunca emprega mais gente do que a população permite")
+
+	main.queue_free()
+	await process_frame
+
+func _test_scene_progression_grows_reveal_radius() -> void:
+	var main := _boot_main()
+	await process_frame
+	_check(main.progression.level == 1, "vila começa no nível 1")
+	# a 10 células do centro: fora do alcance do nível 1 (9), dentro do
+	# alcance do nível 2 (12) — ver Progression.REVEAL_RADIUS_BY_LEVEL.
+	var far_cell: Vector2i = main._village_cell + Vector2i(10, 0)
+	_check(not main.fog.is_explored(far_cell.x, far_cell.y), "célula fora do alcance inicial ainda não foi explorada")
+
+	var steps := 0
+	while steps < 3000 and main.progression.level < 2:
+		main._process(1.0 / 30.0)
+		steps += 1
+	_check(main.progression.level >= 2, "a vila sobe de nível dentro de um teto razoável de passos (%d)" % steps)
+	_check(main.fog.is_explored(far_cell.x, far_cell.y), "depois de subir de nível, o alcance de exploração cresceu de verdade — uma célula antes escura foi vista")
 
 	main.queue_free()
 	await process_frame
