@@ -77,6 +77,18 @@ func _initialize() -> void:
 	await process_frame
 	await _capture("04_processamento", main)
 
+	# Mina + Forja: terceira cadeia (minério → lingote), mesma técnica de
+	# espera do bloco/tábua acima — avança até a Forja render lingote de
+	# verdade.
+	var got_lingote := false
+	steps = 0
+	while steps < 10000 and not got_lingote:
+		main._process(1.0 / 30.0)
+		steps += 1
+		got_lingote = main.buildings.stock.get("lingote", 0.0) > 0.0
+	await process_frame
+	await _capture("05_minerio_e_lingote", main)
+
 	# Fase 7: afasta a câmera pra ver a vila inteira e avança até ela subir
 	# pra nível 2 — o alcance de exploração (raio da névoa) cresce de
 	# verdade nesse momento, não é só um número no HUD.
@@ -87,21 +99,21 @@ func _initialize() -> void:
 		main._process(1.0 / 30.0)
 		steps += 1
 	await process_frame
-	await _capture("05_vila_sobe_de_nivel", main)
+	await _capture("06_vila_sobe_de_nivel", main)
 
 	# Explora um pedaço bem longe da vila, pra mostrar a névoa recuando de
 	# verdade em vez de só a área que já nasce revelada.
 	main._scout_at(Vector2(8, 8) * float(main.CELL))
 	main._scout_at(Vector2(50, 32) * float(main.CELL))
 	await process_frame
-	await _capture("06_depois_de_explorar", main)
+	await _capture("07_depois_de_explorar", main)
 
 	# Afasta a câmera (zoom out) pra ver uma fatia maior do mapa de uma vez —
 	# mostra o relevo/depósitos variados que a Fase 1 promete.
 	main.camera.zoom = Vector2(main.ZOOM_MIN, main.ZOOM_MIN)
 	main.camera.position = Vector2(main.MAP_COLS, main.MAP_ROWS) * float(main.CELL) * 0.5
 	await process_frame
-	await _capture("07_vista_afastada", main)
+	await _capture("08_vista_afastada", main)
 
 	print("capturas salvas em %s" % ProjectSettings.globalize_path(OUT_DIR))
 	quit(0)

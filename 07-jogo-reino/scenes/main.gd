@@ -120,6 +120,12 @@ const C_BUILDING := {
 	Buildings.Kind.STONE_WORKSHOP: Color("6b7280"),
 	Buildings.Kind.GENERATOR: Color("4a6b3a"),
 	Buildings.Kind.HOUSE: Color("6a8caf"),
+	# Mina senta em cima do depósito de minério, que já é laranja (ver
+	# COLOR_ORE) sobre chão de terra batida — cor fria de propósito, pra não
+	# repetir a camuflagem da Pedreira na Fase 2 (marcador quente demais em
+	# cima de chão quente).
+	Buildings.Kind.MINE: Color("4a4a5c"),
+	Buildings.Kind.FORGE: Color("d9622c"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
@@ -129,6 +135,8 @@ const C_BUILDING_ROOF := {
 	Buildings.Kind.STONE_WORKSHOP: Color("454a54"),
 	Buildings.Kind.GENERATOR: Color("2e4526"),
 	Buildings.Kind.HOUSE: Color("41597a"),
+	Buildings.Kind.MINE: Color("2e2e3a"),
+	Buildings.Kind.FORGE: Color("8a3d16"),
 }
 const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
@@ -145,6 +153,7 @@ const CARRIER_CHAR_COORD := Vector2i(0, 6)
 const C_CARGO := {
 	"madeira": Color("b98a4e"),
 	"pedra": Color("a8a8b4"),
+	"minério": Color("8a7fa0"),
 }
 
 var map := MapGen.new()
@@ -266,6 +275,15 @@ func _place_starting_buildings(start: Vector2i) -> void:
 	if stone_cell.x >= 0:
 		buildings.place(Buildings.Kind.QUARRY, stone_cell)
 
+	# Mina (minério → Forja): mesma técnica de busca em anel que Posto de
+	# Lenhador e Pedreira, só que sobre o depósito de colina (Kind.HILLS) que
+	# existe desde a Fase 1 sem nenhum prédio explorando ele. Sem colina no
+	# raio, a vila simplesmente não ganha Mina — mesma regra de "explore
+	# mais" das outras duas.
+	var ore_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.HILLS, start, BUILDING_SEARCH_RADIUS)
+	if ore_cell.x >= 0:
+		buildings.place(Buildings.Kind.MINE, ore_cell)
+
 	# Serraria e Oficina de Pedra (Fase 4) não dependem de depósito nenhum —
 	# elas processam o que já chegou no Armazém, então "perto da vila" é a
 	# única exigência. Só precisam de uma célula livre, não em cima de outro
@@ -296,6 +314,13 @@ func _place_starting_buildings(start: Vector2i) -> void:
 	occupied[house_a_cell] = true
 	var house_b_cell := _free_cell_near(start, Vector2i(0, 2), occupied)
 	buildings.place(Buildings.Kind.HOUSE, house_b_cell)
+	occupied[house_b_cell] = true
+
+	# Forja: mesmo padrão da Serraria/Oficina de Pedra — processa o minério
+	# que já chegou no Armazém, só precisa de célula livre perto da vila, não
+	# de depósito próprio.
+	var forge_cell := _free_cell_near(start, Vector2i(0, -2), occupied)
+	buildings.place(Buildings.Kind.FORGE, forge_cell)
 
 	var solids: Array = []
 	for building in buildings.list:
@@ -580,9 +605,9 @@ func _build_hud() -> void:
 func _update_hud() -> void:
 	if _stock_label == null:
 		return
-	_stock_label.text = "madeira: %.1f    pedra: %.1f    tábua: %.1f    bloco: %.1f\npopulação: %d / %d (%d empregada)\nvila: nível %d (%.0f/%.0f XP) — alcance %d" % [
-		buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0),
-		buildings.stock.get("tábua", 0.0), buildings.stock.get("bloco", 0.0),
+	_stock_label.text = "madeira: %.1f    pedra: %.1f    minério: %.1f\ntábua: %.1f    bloco: %.1f    lingote: %.1f\npopulação: %d / %d (%d empregada)\nvila: nível %d (%.0f/%.0f XP) — alcance %d" % [
+		buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0), buildings.stock.get("minério", 0.0),
+		buildings.stock.get("tábua", 0.0), buildings.stock.get("bloco", 0.0), buildings.stock.get("lingote", 0.0),
 		int(population.count), buildings.housing_capacity(), population.employed(),
 		progression.level, progression.xp, Progression.XP_PER_LEVEL, int(progression.reveal_radius()),
 	]
