@@ -21,8 +21,19 @@ extends RefCounted
 # populacional custa tempo de trajeto"). Staffing é ligado/desligado, um
 # trabalhador por prédio — o mecanismo de fração de vaga ocupada da Colônia
 # (`staffing_ratios()`) só compensaria com múltiplas vagas por prédio.
+#
+# Fase 4 acrescenta PROCESSAMENTO (Serraria, Oficina de Pedra): consomem um
+# recurso bruto do Armazém e devolvem processado, na mesma proporção 1:1.
+# Diferença deliberada de arquitetura em relação ao extrator: processamento
+# lê e escreve direto em `stock` (não tem pátio próprio nem depende de
+# `Carrier`). O insumo JÁ passou pelo carregador pra virar estoque jogável —
+# reexigir uma segunda perna de transporte só pra levar o resultado de volta
+# pro mesmo Armazém não ensinaria nada de novo sobre logística, só repetiria
+# a Fase 3 com nomes diferentes. Fica registrado como simplificação
+# consciente, não descuido — se um dia o processamento sair do Armazém (uma
+# oficina longe da vila, por exemplo), este é o lugar a revisitar.
 
-enum Kind { LUMBERJACK, QUARRY, WAREHOUSE }
+enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP }
 
 const RESOURCE_OF := {
 	Kind.LUMBERJACK: "madeira",
@@ -45,6 +56,17 @@ const PRODUCTION_PER_SECOND := {
 # num só ciclo de coleta (senão o carregador vira o gargalo o tempo todo).
 const EXTRACTOR_BUFFER_CAP := 15.0
 
+# Receita de processamento: `rate` unidades/segundo de `input` viram a MESMA
+# quantidade de `output` (1:1 — sem perda nem multiplicação; balancear a
+# proporção fica pra quando houver custo/receita de verdade pra comparar
+# contra). Mais lento que a extração de propósito: processar é a etapa que
+# "gasta tempo" da cadeia, senão nunca vale mais ter tábua do que madeira
+# crua.
+const PROCESS_RECIPES := {
+	Kind.SAWMILL: {"input": "madeira", "output": "tábua", "rate": 0.6},
+	Kind.STONE_WORKSHOP: {"input": "pedra", "output": "bloco", "rate": 0.5},
+}
+
 class Building:
 	var kind: int
 	var cell: Vector2i
@@ -56,7 +78,7 @@ class Building:
 		cell = c
 
 var list: Array[Building] = []
-var stock: Dictionary = {"madeira": 0.0, "pedra": 0.0}
+var stock: Dictionary = {"madeira": 0.0, "pedra": 0.0, "tábua": 0.0, "bloco": 0.0}
 
 func place(kind: int, cell: Vector2i) -> int:
 	list.append(Building.new(kind, cell))
@@ -72,24 +94,48 @@ func warehouse_id() -> int:
 			return i
 	return -1
 
-# Só extrai (e só acumula no pátio) pra quem está de fato WORKING agora —
-# ver o comentário no topo do arquivo sobre por que "alocado" não basta. O
-# teto do pátio (`EXTRACTOR_BUFFER_CAP`) throttla a extração: sem espaço no
-# pátio, o trabalhador continua WORKING mas nada sai do depósito — não é
-# desperdiçado, só espera.
+# Só extrai/processa pra quem está de fato WORKING agora — ver o comentário
+# no topo do arquivo sobre por que "alocado" não basta.
 func advance(delta: float, map: MapGen, workers: Workers) -> void:
 	for building in list:
-		if not RESOURCE_OF.has(building.kind) or building.worker_id == -1:
+		var is_extractor: bool = RESOURCE_OF.has(building.kind)
+		var is_processor: bool = PROCESS_RECIPES.has(building.kind)
+		if (not is_extractor and not is_processor) or building.worker_id == -1:
 			continue
 		var w := _worker_by_id(workers, building.worker_id)
 		if w == null or w.state != Worker.State.WORKING:
 			continue
-		var room: float = EXTRACTOR_BUFFER_CAP - building.buffer
-		if room <= 0.0:
-			continue
-		var rate: float = PRODUCTION_PER_SECOND[building.kind]
-		var extracted: float = map.extract(building.cell.x, building.cell.y, minf(rate * delta, room))
-		building.buffer += extracted
+		if is_extractor:
+			_advance_extractor(building, delta, map)
+		else:
+			_advance_processor(building, delta)
+
+# O teto do pátio (`EXTRACTOR_BUFFER_CAP`) throttla a extração: sem espaço no
+# pátio, o trabalhador continua WORKING mas nada sai do depósito — não é
+# desperdiçado, só espera.
+func _advance_extractor(building: Building, delta: float, map: MapGen) -> void:
+	var room: float = EXTRACTOR_BUFFER_CAP - building.buffer
+	if room <= 0.0:
+		return
+	var rate: float = PRODUCTION_PER_SECOND[building.kind]
+	var extracted: float = map.extract(building.cell.x, building.cell.y, minf(rate * delta, room))
+	building.buffer += extracted
+
+# Throttlado pelo estoque de insumo disponível — sem madeira no Armazém, a
+# Serraria fica com o trabalhador WORKING mas não produz tábua nenhuma. Não é
+# um caso especial: é a mesma lógica "só rende o que existe" do extrator
+# (lá o limite é o pátio; aqui é o estoque bruto).
+func _advance_processor(building: Building, delta: float) -> void:
+	var recipe: Dictionary = PROCESS_RECIPES[building.kind]
+	var input: String = recipe["input"]
+	var output: String = recipe["output"]
+	var rate: float = recipe["rate"]
+	var available: float = stock.get(input, 0.0)
+	var used: float = minf(rate * delta, available)
+	if used <= 0.0:
+		return
+	stock[input] = available - used
+	stock[output] = stock.get(output, 0.0) + used
 
 # Um carregador tirando do pátio de um prédio — nunca mais do que existe lá.
 func collect(building_id: int, amount: float) -> float:
