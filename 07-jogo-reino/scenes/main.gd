@@ -1,16 +1,20 @@
 extends Node2D
 
-# Fase 2: o primeiro ciclo econômico de verdade em cima do mapa da Fase 1.
-# Um Posto de Lenhador e uma Pedreira nascem na célula de depósito mais
-# próxima da vila; um trabalhador é alocado por prédio, anda até lá pelo
-# Pathfinder (A* + trilha de pisoteio, portado da Colônia V2) e só produz
-# quando chega e fica WORKING de verdade — "alocado" não é "produzindo", o
-# trajeto custa tempo, igual o plano do projeto pede. `Buildings.advance`
-# drena direto o depósito do MapGen (mesmo estoque da Fase 1: sem
-# contabilidade duplicada, e o depósito ainda esgota do mesmo jeito).
+# Fase 3: transporte. A Fase 2 fazia a produção virar estoque jogável na
+# hora que o trabalhador extraía — a partir daqui ela só vira PÁTIO
+# (`Building.buffer`), e um NPC carregador precisa efetivamente levar aquilo
+# até o Armazém pra contar como recurso de verdade (`Buildings.stock`). Um
+# extrator com o pátio cheio para de extrair sozinho (ver `Buildings.advance`
+# e `EXTRACTOR_BUFFER_CAP`) até alguém vir buscar — o transporte deixa de ser
+# decoração e vira o gargalo real do ciclo.
 #
-# Mapa, névoa e lagos continuam da Fase 1 sem mudança de arquitetura — ver o
-# histórico dessas partes em docs/plano-projeto7-reino.md.
+# O Armazém nasce na própria vila (mesma célula onde a câmera começa) e é só
+# mais um prédio sólido no pathfinder — sem trabalhador alocado, sem
+# depósito embaixo, só um destino fixo pro carregador.
+#
+# Posto de Lenhador e Pedreira, com um trabalhador cada, continuam da Fase 2
+# sem mudança de arquitetura — ver o histórico completo das fases anteriores
+# em docs/plano-projeto7-reino.md.
 
 const TILE_SIZE := 16
 const DISPLAY_SCALE := 2
@@ -88,10 +92,12 @@ const WORKER_SCALE := 2.0
 const C_BUILDING := {
 	Buildings.Kind.LUMBERJACK: Color("8a5a34"),
 	Buildings.Kind.QUARRY: Color("b5493a"),
+	Buildings.Kind.WAREHOUSE: Color("d8c9a3"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
 	Buildings.Kind.QUARRY: Color("7a2f26"),
+	Buildings.Kind.WAREHOUSE: Color("8a7c5c"),
 }
 const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
@@ -100,18 +106,31 @@ const STATE_COLORS := {
 	Worker.State.WORKING: Color("ffd166"),
 }
 
+# --- Fase 3: armazém + carregador ---
+# Terceiro rosto do elenco (ver CHAR_CAST acima) — o carregador precisa ser
+# visualmente distinto dos trabalhadores de posto, senão "quem está indo
+# entregar" e "quem está indo trabalhar" viram a mesma pergunta.
+const CARRIER_CHAR_COORD := Vector2i(0, 6)
+const C_CARGO := {
+	"madeira": Color("b98a4e"),
+	"pedra": Color("a8a8b4"),
+}
+
 var map := MapGen.new()
 var fog := Fog.new()
 var water_sim := WaterSim.new()
 var pathfinder := Pathfinder.new()
 var buildings := Buildings.new()
 var workers := Workers.new()
+var carriers := Carriers.new()
 var camera: Camera2D
 var _fog_layer: Node2D
 var _water_layer: Node2D
 var _buildings_root: Node2D
 var _workers_root: Node2D
+var _carriers_root: Node2D
 var _worker_nodes: Dictionary = {}   # Worker.id -> Node2D
+var _carrier_nodes: Dictionary = {}  # Carrier.id -> Node2D
 var _vision_sources: Array = []
 var _stock_label: Label
 
@@ -142,10 +161,16 @@ func _ready() -> void:
 	# posto", não staffing fracionário: isso só passaria a valer a pena com
 	# múltiplas vagas por prédio (ver o comentário em buildings.gd).
 	for i in buildings.list.size():
+		var building := buildings.list[i]
+		if building.kind == Buildings.Kind.WAREHOUSE:
+			continue
 		var worker := workers.spawn(Vector2(start) * CELL)
 		buildings.assign(i, worker)
-		workers.send_to(worker, _work_spot_for(buildings.list[i]), pathfinder)
+		workers.send_to(worker, _work_spot_for(building), pathfinder)
 		_spawn_worker_node(worker)
+
+	var carrier := carriers.spawn(Vector2(start) * CELL)
+	_spawn_carrier_node(carrier)
 
 	_vision_sources.append(Vector3(start.x, start.y, START_REVEAL_RADIUS))
 	fog.update_visibility(_vision_sources)
@@ -153,12 +178,16 @@ func _ready() -> void:
 
 	camera.position = Vector2(start) * CELL
 
-# Coloca um Posto de Lenhador e uma Pedreira na célula de depósito mais
-# próxima da vila (busca em anéis, ver Buildings.nearest_deposit_cell). Uma
-# semente de mapa sem floresta/pedra por perto simplesmente não ganha aquele
-# prédio agora — não é erro, é o jogo dizendo "explore mais" (mesma ideia do
-# plano: "depósito se esgota → motiva avançar pelo mapa").
+# O Armazém nasce na própria célula da vila — é o destino fixo do
+# carregador, não precisa buscar depósito nenhum. Posto de Lenhador e
+# Pedreira continuam buscando em anéis crescentes a célula de depósito mais
+# próxima (ver Buildings.nearest_deposit_cell); uma semente de mapa sem
+# floresta/pedra por perto simplesmente não ganha aquele prédio agora — não
+# é erro, é o jogo dizendo "explore mais" (mesma ideia do plano: "depósito
+# se esgota → motiva avançar pelo mapa").
 func _place_starting_buildings(start: Vector2i) -> void:
+	buildings.place(Buildings.Kind.WAREHOUSE, start)
+
 	var forest_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.FOREST, start, BUILDING_SEARCH_RADIUS)
 	if forest_cell.x >= 0:
 		buildings.place(Buildings.Kind.LUMBERJACK, forest_cell)
@@ -209,8 +238,10 @@ func _process(delta: float) -> void:
 	map.advance(delta)
 	workers.advance(delta, pathfinder)
 	buildings.advance(delta, map, workers)
+	carriers.advance(delta, pathfinder, buildings)
 	pathfinder.decay(delta)
 	_sync_worker_nodes()
+	_sync_carrier_nodes()
 	_update_hud()
 	_pan_with_keys(delta)
 
@@ -337,6 +368,10 @@ func _build_world() -> void:
 	_workers_root.name = "Workers"
 	world.add_child(_workers_root)
 
+	_carriers_root = Node2D.new()
+	_carriers_root.name = "Carriers"
+	world.add_child(_carriers_root)
+
 	_fog_layer = Node2D.new()
 	_fog_layer.name = "FogLayer"
 	_fog_layer.draw.connect(_draw_fog)
@@ -376,7 +411,7 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção — Fase 2 (extração)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção — Fase 3 (transporte)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
@@ -470,6 +505,52 @@ func _sync_worker_nodes() -> void:
 func _sync_worker_node(w: Worker, node: Node2D) -> void:
 	node.position = w.position
 	node.get_node("Estado").modulate = STATE_COLORS.get(w.state, Color.WHITE)
+
+# ---- Fase 3: carregador ----
+
+func _spawn_carrier_node(c: Carrier) -> void:
+	var node := Node2D.new()
+
+	var body := Sprite2D.new()
+	body.name = "Corpo"
+	body.texture = _char_texture
+	body.region_enabled = true
+	body.region_rect = Rect2(
+		CARRIER_CHAR_COORD.x * (CHAR_TILE + CHAR_MARGIN), CARRIER_CHAR_COORD.y * (CHAR_TILE + CHAR_MARGIN),
+		CHAR_TILE, CHAR_TILE
+	)
+	body.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	body.scale = Vector2(WORKER_SCALE, WORKER_SCALE)
+	body.centered = false
+	body.position = Vector2(-CHAR_TILE * WORKER_SCALE * 0.5, -CHAR_TILE * WORKER_SCALE)
+	node.add_child(body)
+
+	# Um quadradinho da cor do recurso, só visível quando carregando algo —
+	# é o que diferencia "indo buscar" de "voltando com carga" numa olhada,
+	# sem precisar de animação.
+	var cargo := ColorRect.new()
+	cargo.name = "Carga"
+	cargo.size = Vector2(10, 10)
+	cargo.position = Vector2(-5, -CHAR_TILE * WORKER_SCALE - 16)
+	cargo.visible = false
+	node.add_child(cargo)
+
+	_carriers_root.add_child(node)
+	_carrier_nodes[c.id] = node
+	_sync_carrier_node(c, node)
+
+func _sync_carrier_nodes() -> void:
+	for c in carriers.list:
+		var node: Node2D = _carrier_nodes.get(c.id)
+		if node:
+			_sync_carrier_node(c, node)
+
+func _sync_carrier_node(c: Carrier, node: Node2D) -> void:
+	node.position = c.position
+	var cargo: ColorRect = node.get_node("Carga")
+	cargo.visible = c.carrying > 0.0
+	if cargo.visible:
+		cargo.color = C_CARGO.get(c.resource, Color.WHITE)
 
 func _build_state_dot() -> Texture2D:
 	var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
