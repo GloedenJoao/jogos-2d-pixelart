@@ -72,6 +72,10 @@ func _initialize() -> void:
 	_test_buildings_collect_and_deliver()
 	_test_buildings_warehouse_id()
 
+	_test_buildings_processor_only_produces_when_worker_is_working()
+	_test_buildings_processor_conversion_is_1_to_1()
+	_test_buildings_processor_throttled_by_available_input()
+
 	_test_carrier_picks_the_fullest_buffer()
 	_test_carrier_full_round_trip_delivers_to_warehouse()
 	_test_carrier_ignores_buffers_below_min_pickup()
@@ -83,6 +87,7 @@ func _initialize() -> void:
 	await _test_scene_pan_moves_camera_within_limits()
 	await _test_scene_worker_arrives_and_produces()
 	await _test_scene_carrier_delivers_to_warehouse()
+	await _test_scene_processing_chain_produces_tabua_and_bloco()
 
 	print("")
 	if _fail == 0:
@@ -663,6 +668,58 @@ func _test_buildings_warehouse_id() -> void:
 	var wid := b.place(Buildings.Kind.WAREHOUSE, Vector2i(9, 9))
 	_check(b.warehouse_id() == wid, "acha o armazém certo mesmo com outros prédios na lista")
 
+# ---- Fase 4: processamento (Serraria, Oficina de Pedra) ----
+
+func _test_buildings_processor_only_produces_when_worker_is_working() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.SAWMILL, Vector2i(4, 4))
+	b.stock["madeira"] = 10.0
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+
+	b.advance(1.0, MapGen.new(), mgr)
+	_near(b.stock["tábua"], 0.0, 0.0001, "sem trabalhador alocado, Serraria não processa nada")
+
+	b.assign(id, w)
+	w.state = Worker.State.WALKING
+	b.advance(1.0, MapGen.new(), mgr)
+	_near(b.stock["tábua"], 0.0, 0.0001, "alocado mas ainda a caminho não processa")
+
+	w.state = Worker.State.WORKING
+	b.advance(1.0, MapGen.new(), mgr)
+	_check(b.stock["tábua"] > 0.0, "trabalhador WORKING na Serraria processa de verdade")
+
+func _test_buildings_processor_conversion_is_1_to_1() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.STONE_WORKSHOP, Vector2i(4, 4))
+	b.stock["pedra"] = 20.0
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(id, w)
+	w.state = Worker.State.WORKING
+
+	b.advance(2.0, MapGen.new(), mgr)
+	var consumed: float = 20.0 - b.stock["pedra"]
+	_near(b.stock["bloco"], consumed, 0.0001, "cada unidade de pedra consumida vira exatamente uma de bloco (1:1)")
+	_check(consumed > 0.0, "consumiu pedra de verdade (o teste não é vácuo)")
+
+func _test_buildings_processor_throttled_by_available_input() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.SAWMILL, Vector2i(4, 4))
+	b.stock["madeira"] = 0.3   # bem menos do que a receita pediria num segundo
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(id, w)
+	w.state = Worker.State.WORKING
+
+	b.advance(1.0, MapGen.new(), mgr)
+	_near(b.stock["madeira"], 0.0, 0.0001, "consome só o que existe, não fica negativo")
+	_near(b.stock["tábua"], 0.3, 0.0001, "produção fica limitada pelo insumo disponível, não pela taxa da receita")
+
+	var tabua_before: float = b.stock["tábua"]
+	b.advance(5.0, MapGen.new(), mgr)
+	_near(b.stock["tábua"], tabua_before, 0.0001, "sem mais insumo, Serraria para sozinha (trabalhador continua WORKING)")
+
 # ---- Fase 3: carregador (carrier.gd / carriers.gd) ----
 
 func _open_pathfinder(cols: int = 20, rows: int = 20, cell: float = 32.0) -> Pathfinder:
@@ -879,6 +936,30 @@ func _test_scene_carrier_delivers_to_warehouse() -> void:
 			if main.buildings.stock[resource] > before.get(resource, 0.0):
 				delivered = true
 	_check(delivered, "dentro de um teto razoável, o ciclo completo (produzir → coletar → entregar) rende estoque jogável de verdade (%d passos)" % steps)
+
+	main.queue_free()
+	await process_frame
+
+# Fase 4 de ponta a ponta: extrair → transportar → processar. Precisa de mais
+# tempo que o teste anterior (a cadeia é uma etapa mais longa), por isso um
+# teto de passos maior.
+func _test_scene_processing_chain_produces_tabua_and_bloco() -> void:
+	var main := _boot_main()
+	await process_frame
+	var sawmill: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.SAWMILL)
+	var workshop: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
+	_check(sawmill.size() == 1 and workshop.size() == 1, "a cena coloca Serraria e Oficina de Pedra")
+
+	var steps := 0
+	var got_tabua := false
+	var got_bloco := false
+	while steps < 10000 and not (got_tabua and got_bloco):
+		main._process(1.0 / 30.0)
+		steps += 1
+		got_tabua = main.buildings.stock.get("tábua", 0.0) > 0.0
+		got_bloco = main.buildings.stock.get("bloco", 0.0) > 0.0
+	_check(got_tabua, "a cadeia inteira rende tábua de verdade dentro de um teto razoável (%d passos)" % steps)
+	_check(got_bloco, "a cadeia inteira rende bloco de verdade dentro de um teto razoável (%d passos)" % steps)
 
 	main.queue_free()
 	await process_frame

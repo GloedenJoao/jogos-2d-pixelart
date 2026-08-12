@@ -59,19 +59,32 @@ func _initialize() -> void:
 	await process_frame
 	await _capture("03_carregador_entregando", main)
 
+	# Fase 4: avança até a cadeia inteira (extrair → transportar → processar)
+	# render tábua E bloco de verdade.
+	var got_tabua := false
+	var got_bloco := false
+	steps = 0
+	while steps < 10000 and not (got_tabua and got_bloco):
+		main._process(1.0 / 30.0)
+		steps += 1
+		got_tabua = main.buildings.stock.get("tábua", 0.0) > 0.0
+		got_bloco = main.buildings.stock.get("bloco", 0.0) > 0.0
+	await process_frame
+	await _capture("04_processamento", main)
+
 	# Explora um pedaço bem longe da vila, pra mostrar a névoa recuando de
 	# verdade em vez de só a área que já nasce revelada.
 	main._scout_at(Vector2(8, 8) * float(main.CELL))
 	main._scout_at(Vector2(50, 32) * float(main.CELL))
 	await process_frame
-	await _capture("04_depois_de_explorar", main)
+	await _capture("05_depois_de_explorar", main)
 
 	# Afasta a câmera (zoom out) pra ver uma fatia maior do mapa de uma vez —
 	# mostra o relevo/depósitos variados que a Fase 1 promete.
 	main.camera.zoom = Vector2(main.ZOOM_MIN, main.ZOOM_MIN)
 	main.camera.position = Vector2(main.MAP_COLS, main.MAP_ROWS) * float(main.CELL) * 0.5
 	await process_frame
-	await _capture("05_vista_afastada", main)
+	await _capture("06_vista_afastada", main)
 
 	print("capturas salvas em %s" % ProjectSettings.globalize_path(OUT_DIR))
 	quit(0)

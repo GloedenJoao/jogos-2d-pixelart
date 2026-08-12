@@ -1,20 +1,25 @@
 extends Node2D
 
-# Fase 3: transporte. A Fase 2 fazia a produção virar estoque jogável na
-# hora que o trabalhador extraía — a partir daqui ela só vira PÁTIO
-# (`Building.buffer`), e um NPC carregador precisa efetivamente levar aquilo
-# até o Armazém pra contar como recurso de verdade (`Buildings.stock`). Um
-# extrator com o pátio cheio para de extrair sozinho (ver `Buildings.advance`
-# e `EXTRACTOR_BUFFER_CAP`) até alguém vir buscar — o transporte deixa de ser
-# decoração e vira o gargalo real do ciclo.
+# Fase 4: processamento. Serraria e Oficina de Pedra transformam o bruto que
+# já chegou no Armazém (madeira/pedra) em processado (tábua/bloco), 1:1,
+# throttladas pelo estoque de insumo disponível — sem madeira, a Serraria
+# fica com trabalhador WORKING mas não produz nada, mesma lógica de "só
+# rende o que existe" do extrator (Fase 2/3), só que o limite agora é
+# estoque em vez de depósito ou pátio. Diferente dos extratores, elas não
+# ficam sobre um depósito nem têm pátio próprio — leem e escrevem direto no
+# Armazém (ver o comentário em buildings.gd sobre por que isso é
+# simplificação consciente, não descuido).
 #
-# O Armazém nasce na própria vila (mesma célula onde a câmera começa) e é só
-# mais um prédio sólido no pathfinder — sem trabalhador alocado, sem
-# depósito embaixo, só um destino fixo pro carregador.
+# Tudo daqui pra baixo é histórico das fases anteriores, sem mudança de
+# arquitetura — ver a quebra completa em docs/plano-projeto7-reino.md:
 #
-# Posto de Lenhador e Pedreira, com um trabalhador cada, continuam da Fase 2
-# sem mudança de arquitetura — ver o histórico completo das fases anteriores
-# em docs/plano-projeto7-reino.md.
+# Fase 3 — transporte: a produção do extrator vira PÁTIO
+# (`Building.buffer`), e um NPC carregador leva até o Armazém pra virar
+# estoque jogável (`Buildings.stock`). Um extrator com o pátio cheio para de
+# extrair sozinho até alguém vir buscar.
+#
+# Fase 2 — Posto de Lenhador e Pedreira, um trabalhador por prédio, andando
+# até o posto pelo Pathfinder antes de produzir.
 
 const TILE_SIZE := 16
 const DISPLAY_SCALE := 2
@@ -93,11 +98,15 @@ const C_BUILDING := {
 	Buildings.Kind.LUMBERJACK: Color("8a5a34"),
 	Buildings.Kind.QUARRY: Color("b5493a"),
 	Buildings.Kind.WAREHOUSE: Color("d8c9a3"),
+	Buildings.Kind.SAWMILL: Color("d1a63e"),
+	Buildings.Kind.STONE_WORKSHOP: Color("6b7280"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
 	Buildings.Kind.QUARRY: Color("7a2f26"),
 	Buildings.Kind.WAREHOUSE: Color("8a7c5c"),
+	Buildings.Kind.SAWMILL: Color("8f6f2c"),
+	Buildings.Kind.STONE_WORKSHOP: Color("454a54"),
 }
 const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
@@ -195,10 +204,41 @@ func _place_starting_buildings(start: Vector2i) -> void:
 	if stone_cell.x >= 0:
 		buildings.place(Buildings.Kind.QUARRY, stone_cell)
 
+	# Serraria e Oficina de Pedra (Fase 4) não dependem de depósito nenhum —
+	# elas processam o que já chegou no Armazém, então "perto da vila" é a
+	# única exigência. Só precisam de uma célula livre, não em cima de outro
+	# prédio.
+	var occupied := {}
+	for building in buildings.list:
+		occupied[building.cell] = true
+	var sawmill_cell := _free_cell_near(start, Vector2i(2, -2), occupied)
+	buildings.place(Buildings.Kind.SAWMILL, sawmill_cell)
+	occupied[sawmill_cell] = true
+	var workshop_cell := _free_cell_near(start, Vector2i(-2, -2), occupied)
+	buildings.place(Buildings.Kind.STONE_WORKSHOP, workshop_cell)
+
 	var solids: Array = []
 	for building in buildings.list:
 		solids.append(building.cell)
 	pathfinder.rebuild(solids)
+
+# Busca em anéis crescentes a partir de `start + offset` — mesma técnica de
+# `Buildings.nearest_deposit_cell`, mas contra um conjunto de células já
+# ocupadas em vez de um tipo de depósito. Só usado pra prédios que não têm
+# depósito próprio (Serraria, Oficina de Pedra).
+func _free_cell_near(start: Vector2i, offset: Vector2i, occupied: Dictionary) -> Vector2i:
+	var candidate := start + offset
+	if map.inside(candidate.x, candidate.y) and not occupied.has(candidate):
+		return candidate
+	for radius in range(1, 6):
+		for dx in range(-radius, radius + 1):
+			for dy in range(-radius, radius + 1):
+				if maxi(absi(dx), absi(dy)) != radius:
+					continue
+				var probe := candidate + Vector2i(dx, dy)
+				if map.inside(probe.x, probe.y) and not occupied.has(probe):
+					return probe
+	return candidate
 
 # Onde o trabalhador para: DUAS células abaixo do prédio, não em cima nem
 # colado nele — o prédio é sólido no pathfinder (ninguém anda por cima), e
@@ -411,7 +451,7 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção — Fase 3 (transporte)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção — Fase 4 (processamento)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
@@ -428,7 +468,10 @@ func _build_hud() -> void:
 func _update_hud() -> void:
 	if _stock_label == null:
 		return
-	_stock_label.text = "madeira: %.1f    pedra: %.1f" % [buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0)]
+	_stock_label.text = "madeira: %.1f    pedra: %.1f    tábua: %.1f    bloco: %.1f" % [
+		buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0),
+		buildings.stock.get("tábua", 0.0), buildings.stock.get("bloco", 0.0),
+	]
 
 # ---- Fase 2: prédios e trabalhador ----
 
