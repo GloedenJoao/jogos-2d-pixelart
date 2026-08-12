@@ -1,17 +1,20 @@
 extends Node2D
 
-# Fase 4: processamento. Serraria e Oficina de Pedra transformam o bruto que
-# já chegou no Armazém (madeira/pedra) em processado (tábua/bloco), 1:1,
-# throttladas pelo estoque de insumo disponível — sem madeira, a Serraria
-# fica com trabalhador WORKING mas não produz nada, mesma lógica de "só
-# rende o que existe" do extrator (Fase 2/3), só que o limite agora é
-# estoque em vez de depósito ou pátio. Diferente dos extratores, elas não
-# ficam sobre um depósito nem têm pátio próprio — leem e escrevem direto no
-# Armazém (ver o comentário em buildings.gd sobre por que isso é
-# simplificação consciente, não descuido).
+# Fase 5: energia. O Gerador a Lenha queima madeira do Armazém e cobre um
+# raio em células — todo prédio de extração/processamento dentro do raio
+# produz mesmo SEM trabalhador, desde que o gerador tenha combustível.
+# "Energia OU trabalhador", não "e": a Oficina de Pedra nasce de propósito
+# SEM trabalhador (única exceção — ver o comentário em `_ready()`) pra
+# provar que o raio sozinho basta. O gerador só acende quando existe alguém
+# no raio que realmente precisa dele (`Buildings._compute_powered`), senão
+# "energia" seria só desperdiçar madeira à toa.
 #
 # Tudo daqui pra baixo é histórico das fases anteriores, sem mudança de
 # arquitetura — ver a quebra completa em docs/plano-projeto7-reino.md:
+#
+# Fase 4 — processamento: Serraria e Oficina de Pedra transformam bruto do
+# Armazém em processado (tábua/bloco), 1:1, throttladas pelo estoque de
+# insumo disponível — leem/escrevem direto em `stock`, sem pátio próprio.
 #
 # Fase 3 — transporte: a produção do extrator vira PÁTIO
 # (`Building.buffer`), e um NPC carregador leva até o Armazém pra virar
@@ -100,6 +103,7 @@ const C_BUILDING := {
 	Buildings.Kind.WAREHOUSE: Color("d8c9a3"),
 	Buildings.Kind.SAWMILL: Color("d1a63e"),
 	Buildings.Kind.STONE_WORKSHOP: Color("6b7280"),
+	Buildings.Kind.GENERATOR: Color("4a6b3a"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
@@ -107,6 +111,7 @@ const C_BUILDING_ROOF := {
 	Buildings.Kind.WAREHOUSE: Color("8a7c5c"),
 	Buildings.Kind.SAWMILL: Color("8f6f2c"),
 	Buildings.Kind.STONE_WORKSHOP: Color("454a54"),
+	Buildings.Kind.GENERATOR: Color("2e4526"),
 }
 const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
@@ -140,6 +145,7 @@ var _workers_root: Node2D
 var _carriers_root: Node2D
 var _worker_nodes: Dictionary = {}   # Worker.id -> Node2D
 var _carrier_nodes: Dictionary = {}  # Carrier.id -> Node2D
+var _building_nodes: Dictionary = {} # Buildings.Building -> Node2D
 var _vision_sources: Array = []
 var _stock_label: Label
 
@@ -169,9 +175,19 @@ func _ready() -> void:
 	# inexistente parecem a mesma coisa. Continua sendo "um trabalhador por
 	# posto", não staffing fracionário: isso só passaria a valer a pena com
 	# múltiplas vagas por prédio (ver o comentário em buildings.gd).
+	#
+	# Duas exceções deliberadas (Fase 5): o Armazém e o Gerador nunca têm
+	# trabalhador — são infraestrutura passiva, não produção. E a Oficina de
+	# Pedra, apesar de PODER ter trabalhador, nasce sem nenhum de propósito:
+	# é o jeito mais direto de mostrar "energia OU trabalhador" de verdade —
+	# ela só produz porque está no raio do Gerador, não por acaso ter os
+	# dois. Posto de Lenhador, Pedreira e Serraria continuam com trabalhador
+	# como sempre.
 	for i in buildings.list.size():
 		var building := buildings.list[i]
-		if building.kind == Buildings.Kind.WAREHOUSE:
+		if building.kind == Buildings.Kind.WAREHOUSE or building.kind == Buildings.Kind.GENERATOR:
+			continue
+		if building.kind == Buildings.Kind.STONE_WORKSHOP:
 			continue
 		var worker := workers.spawn(Vector2(start) * CELL)
 		buildings.assign(i, worker)
@@ -216,6 +232,14 @@ func _place_starting_buildings(start: Vector2i) -> void:
 	occupied[sawmill_cell] = true
 	var workshop_cell := _free_cell_near(start, Vector2i(-2, -2), occupied)
 	buildings.place(Buildings.Kind.STONE_WORKSHOP, workshop_cell)
+	occupied[workshop_cell] = true
+
+	# Gerador a Lenha (Fase 5): perto o bastante da Oficina de Pedra pra ela
+	# ficar dentro do raio (Buildings.GENERATOR_RADIUS) e produzir só com
+	# energia — ver o comentário em _ready() sobre por que ela nasce sem
+	# trabalhador de propósito.
+	var generator_cell := _free_cell_near(start, Vector2i(-2, 0), occupied)
+	buildings.place(Buildings.Kind.GENERATOR, generator_cell)
 
 	var solids: Array = []
 	for building in buildings.list:
@@ -280,6 +304,7 @@ func _process(delta: float) -> void:
 	buildings.advance(delta, map, workers)
 	carriers.advance(delta, pathfinder, buildings)
 	pathfinder.decay(delta)
+	_sync_building_nodes()
 	_sync_worker_nodes()
 	_sync_carrier_nodes()
 	_update_hud()
@@ -402,7 +427,9 @@ func _build_world() -> void:
 	_buildings_root.name = "Buildings"
 	world.add_child(_buildings_root)
 	for building in buildings.list:
-		_buildings_root.add_child(_make_building_node(building))
+		var node := _make_building_node(building)
+		_buildings_root.add_child(node)
+		_building_nodes[building] = node
 
 	_workers_root = Node2D.new()
 	_workers_root.name = "Workers"
@@ -451,7 +478,7 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção — Fase 4 (processamento)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção — Fase 5 (energia)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
@@ -506,7 +533,28 @@ func _make_building_node(building: Buildings.Building) -> Node2D:
 	roof.color = C_BUILDING_ROOF[building.kind]
 	node.add_child(roof)
 
+	# Raio-marca amarela: só fica visível no frame em que o prédio está de
+	# fato POWERED (ver Buildings.advance/_compute_powered). É o único jeito
+	# de perceber que a Oficina de Pedra está produzindo — ela não tem
+	# trabalhador, então não tem a bolinha de estado que os outros prédios
+	# ganham através do NPC alocado.
+	var bolt := Sprite2D.new()
+	bolt.name = "Energia"
+	bolt.texture = _state_dot_texture
+	bolt.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	bolt.modulate = STATE_COLORS[Worker.State.WORKING]
+	bolt.scale = Vector2(1.6, 1.6)
+	bolt.position = Vector2(CELL * 0.5, -6)
+	bolt.visible = false
+	node.add_child(bolt)
+
 	return node
+
+func _sync_building_nodes() -> void:
+	for building in buildings.list:
+		var node: Node2D = _building_nodes.get(building)
+		if node:
+			node.get_node("Energia").visible = building.powered
 
 func _spawn_worker_node(w: Worker) -> void:
 	var node := Node2D.new()
