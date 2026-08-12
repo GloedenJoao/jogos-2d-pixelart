@@ -65,14 +65,24 @@ func _initialize() -> void:
 
 	_test_buildings_place_and_assign()
 	_test_buildings_only_produce_when_worker_is_working()
+	_test_buildings_buffer_caps_and_throttles_extraction()
 	_test_buildings_production_stops_when_deposit_empties()
 	_test_buildings_nearest_deposit_cell()
+
+	_test_buildings_collect_and_deliver()
+	_test_buildings_warehouse_id()
+
+	_test_carrier_picks_the_fullest_buffer()
+	_test_carrier_full_round_trip_delivers_to_warehouse()
+	_test_carrier_ignores_buffers_below_min_pickup()
+	_test_carrier_does_nothing_without_a_warehouse()
 
 	await _test_scene_boots()
 	await _test_scene_camera_limits_to_map_size()
 	await _test_scene_click_reveals_fog()
 	await _test_scene_pan_moves_camera_within_limits()
 	await _test_scene_worker_arrives_and_produces()
+	await _test_scene_carrier_delivers_to_warehouse()
 
 	print("")
 	if _fail == 0:
@@ -543,16 +553,44 @@ func _test_buildings_only_produce_when_worker_is_working() -> void:
 	var w := mgr.spawn(Vector2.ZERO)
 
 	b.advance(1.0, m, mgr)
-	_near(b.stock["madeira"], 0.0, 0.0001, "sem trabalhador alocado, prédio não produz nada")
+	_near(b.list[building_id].buffer, 0.0, 0.0001, "sem trabalhador alocado, prédio não acumula nada no pátio")
 
 	b.assign(building_id, w)
 	w.state = Worker.State.WALKING
 	b.advance(1.0, m, mgr)
-	_near(b.stock["madeira"], 0.0, 0.0001, "alocado mas ainda a caminho (WALKING) não produz")
+	_near(b.list[building_id].buffer, 0.0, 0.0001, "alocado mas ainda a caminho (WALKING) não produz")
 
 	w.state = Worker.State.WORKING
 	b.advance(1.0, m, mgr)
-	_check(b.stock["madeira"] > 0.0, "trabalhador WORKING no prédio produz de verdade")
+	_check(b.list[building_id].buffer > 0.0, "trabalhador WORKING no prédio acumula produção no pátio de verdade")
+	_near(b.stock["madeira"], 0.0, 0.0001, "produção no pátio ainda NÃO é estoque jogável — precisa de um carregador (Fase 3)")
+
+func _test_buildings_buffer_caps_and_throttles_extraction() -> void:
+	var m := MapGen.new()
+	m.generate(20, 20, 9001)
+	var forest_cell := Buildings.nearest_deposit_cell(m, MapGen.Kind.FOREST, Vector2i(10, 10), 15)
+	if forest_cell.x < 0:
+		return
+	var b := Buildings.new()
+	var building_id := b.place(Buildings.Kind.LUMBERJACK, forest_cell)
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(building_id, w)
+	w.state = Worker.State.WORKING
+
+	for _i in 60:
+		b.advance(1.0, m, mgr)
+	_near(b.list[building_id].buffer, Buildings.EXTRACTOR_BUFFER_CAP, 0.0001, "pátio para exatamente no teto, não passa dele")
+
+	var deposit_before: float = m.deposit_at(forest_cell.x, forest_cell.y)
+	b.advance(5.0, m, mgr)
+	_near(m.deposit_at(forest_cell.x, forest_cell.y), deposit_before, 0.0001, "pátio cheio: trabalhador fica WORKING mas para de extrair (não desperdiça o depósito)")
+
+	# Esvaziar o pátio (o que um Carrier faria) libera espaço e a extração
+	# volta sozinha, sem precisar reatribuir o trabalhador.
+	b.collect(building_id, Buildings.EXTRACTOR_BUFFER_CAP)
+	b.advance(1.0, m, mgr)
+	_check(b.list[building_id].buffer > 0.0, "pátio esvaziado: extração recomeça no próximo avanço")
 
 func _test_buildings_production_stops_when_deposit_empties() -> void:
 	var m := MapGen.new()
@@ -567,14 +605,18 @@ func _test_buildings_production_stops_when_deposit_empties() -> void:
 	b.assign(building_id, w)
 	w.state = Worker.State.WORKING
 
+	# Esvazia o pátio a cada passo (papel do Carrier neste teste), senão o
+	# teto do pátio para a extração antes do depósito se esgotar de verdade —
+	# não é o mecanismo que este teste quer proteger.
 	for _i in 200:
 		b.advance(1.0, m, mgr)
+		b.collect(building_id, 999.0)
 	_check(m.deposit_at(forest_cell.x, forest_cell.y) == 0.0, "depósito esgota depois de tempo suficiente")
 	_check(m.kind_at(forest_cell.x, forest_cell.y) == MapGen.Kind.GRASS, "célula esgotada vira grama (mesma regra da Fase 1)")
 
-	var stock_before: float = b.stock["madeira"]
+	var buffer_before: float = b.list[building_id].buffer
 	b.advance(5.0, m, mgr)
-	_near(b.stock["madeira"], stock_before, 0.0001, "depósito vazio: prédio para de produzir sozinho, sem erro")
+	_near(b.list[building_id].buffer, buffer_before, 0.0001, "depósito vazio: prédio para de produzir sozinho, sem erro")
 
 func _test_buildings_nearest_deposit_cell() -> void:
 	var m := MapGen.new()
@@ -592,7 +634,114 @@ func _test_buildings_nearest_deposit_cell() -> void:
 		not_forest.x += 1
 	_check(Buildings.nearest_deposit_cell(m, MapGen.Kind.FOREST, not_forest, 0) == Vector2i(-1, -1), "raio 0 numa célula errada não acha nada")
 
-# ---- Fase 1+2: cena ----
+func _test_buildings_collect_and_deliver() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.LUMBERJACK, Vector2i(5, 5))
+	b.list[id].buffer = 8.0
+
+	var taken := b.collect(id, 3.0)
+	_near(taken, 3.0, 0.0001, "collect devolve exatamente o pedido quando o pátio tem de sobra")
+	_near(b.list[id].buffer, 5.0, 0.0001, "collect decrementa o pátio")
+
+	var over := b.collect(id, 999.0)
+	_near(over, 5.0, 0.0001, "collect nunca devolve mais do que existia no pátio")
+	_near(b.list[id].buffer, 0.0, 0.0001, "pátio esvaziado fica em zero, não negativo")
+
+	_near(b.stock.get("madeira", 0.0), 0.0, 0.0001, "collect por si só não entrega nada — só tira do pátio")
+	b.deliver("madeira", 3.0)
+	b.deliver("madeira", 5.0)
+	_near(b.stock["madeira"], 8.0, 0.0001, "deliver soma no estoque jogável, entrega após entrega")
+
+	b.deliver("pedra", 0.0)
+	_check(not b.stock.has("pedra") or b.stock["pedra"] == 0.0, "entregar quantidade zero não faz nada (nem cria a chave à toa)")
+
+func _test_buildings_warehouse_id() -> void:
+	var b := Buildings.new()
+	_check(b.warehouse_id() == -1, "sem nenhum prédio, não existe armazém")
+	b.place(Buildings.Kind.LUMBERJACK, Vector2i(1, 1))
+	_check(b.warehouse_id() == -1, "extrator sozinho não conta como armazém")
+	var wid := b.place(Buildings.Kind.WAREHOUSE, Vector2i(9, 9))
+	_check(b.warehouse_id() == wid, "acha o armazém certo mesmo com outros prédios na lista")
+
+# ---- Fase 3: carregador (carrier.gd / carriers.gd) ----
+
+func _open_pathfinder(cols: int = 20, rows: int = 20, cell: float = 32.0) -> Pathfinder:
+	var pf := Pathfinder.new()
+	pf.setup(cols, rows, cell)
+	return pf
+
+func _test_carrier_picks_the_fullest_buffer() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.WAREHOUSE, Vector2i(0, 0))
+	var lumberjack := b.place(Buildings.Kind.LUMBERJACK, Vector2i(5, 0))
+	var quarry := b.place(Buildings.Kind.QUARRY, Vector2i(0, 5))
+	b.list[lumberjack].buffer = 3.0
+	b.list[quarry].buffer = 9.0
+
+	var pf := _open_pathfinder()
+	pf.rebuild([b.list[0].cell, b.list[lumberjack].cell, b.list[quarry].cell])
+	var mgr := Carriers.new()
+	var c := mgr.spawn(Vector2(160.0, 160.0))
+	mgr.advance(0.1, pf, b)
+	_check(c.source_building == quarry, "escolhe o pátio mais cheio (pedra), não o mais próximo nem o primeiro da lista")
+	_check(c.state == Carrier.State.TO_SOURCE, "já parte pra buscar assim que decide")
+
+func _test_carrier_full_round_trip_delivers_to_warehouse() -> void:
+	var b := Buildings.new()
+	var warehouse := b.place(Buildings.Kind.WAREHOUSE, Vector2i(0, 0))
+	var lumberjack := b.place(Buildings.Kind.LUMBERJACK, Vector2i(6, 0))
+	b.list[lumberjack].buffer = 7.0
+
+	var pf := _open_pathfinder()
+	pf.rebuild([b.list[warehouse].cell, b.list[lumberjack].cell])
+	var mgr := Carriers.new()
+	var c := mgr.spawn(pf.center_of(Vector2i(0, 1)))
+
+	var steps := 0
+	while c.state != Carrier.State.TO_WAREHOUSE and steps < 500:
+		mgr.advance(0.1, pf, b)
+		steps += 1
+	_check(c.state == Carrier.State.TO_WAREHOUSE, "depois de chegar na fonte, pega a carga e parte pro armazém")
+	_near(c.carrying, 7.0, 0.0001, "pega exatamente o que tinha no pátio (menos que a capacidade)")
+	_near(b.list[lumberjack].buffer, 0.0, 0.0001, "pátio esvaziado depois da coleta")
+	_check(c.resource == "madeira", "carrega o recurso certo pro tipo de prédio")
+
+	steps = 0
+	while c.state != Carrier.State.IDLE and steps < 500:
+		mgr.advance(0.1, pf, b)
+		steps += 1
+	_check(c.state == Carrier.State.IDLE, "entrega no armazém e volta a ficar disponível")
+	_near(c.carrying, 0.0, 0.0001, "descarregou tudo — não anda por aí com carga depois de entregar")
+	_near(b.stock["madeira"], 7.0, 0.0001, "a entrega virou estoque jogável de verdade")
+
+func _test_carrier_ignores_buffers_below_min_pickup() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.WAREHOUSE, Vector2i(0, 0))
+	var lumberjack := b.place(Buildings.Kind.LUMBERJACK, Vector2i(5, 0))
+	b.list[lumberjack].buffer = 0.2   # bem abaixo de Carriers.MIN_PICKUP
+
+	var pf := _open_pathfinder()
+	var mgr := Carriers.new()
+	var c := mgr.spawn(Vector2(160.0, 160.0))
+	for _i in 10:
+		mgr.advance(0.1, pf, b)
+	_check(c.state == Carrier.State.IDLE, "pátio quase vazio não compensa a viagem — carregador espera")
+	_near(b.list[lumberjack].buffer, 0.2, 0.0001, "nada foi coletado")
+
+func _test_carrier_does_nothing_without_a_warehouse() -> void:
+	var b := Buildings.new()
+	var lumberjack := b.place(Buildings.Kind.LUMBERJACK, Vector2i(5, 0))
+	b.list[lumberjack].buffer = 20.0
+
+	var pf := _open_pathfinder()
+	var mgr := Carriers.new()
+	var c := mgr.spawn(Vector2(160.0, 160.0))
+	for _i in 10:
+		mgr.advance(0.1, pf, b)
+	_check(c.state == Carrier.State.IDLE, "sem armazém no mapa, o carregador não tem pra onde levar nada")
+	_near(b.list[lumberjack].buffer, 20.0, 0.0001, "e por isso nem chega a coletar")
+
+# ---- Fase 1+2+3: cena ----
 
 func _boot_main() -> Node:
 	var scene: PackedScene = load("res://scenes/main.tscn")
@@ -682,10 +831,12 @@ func _test_scene_pan_moves_camera_within_limits() -> void:
 func _test_scene_worker_arrives_and_produces() -> void:
 	var main := _boot_main()
 	await process_frame
-	_check(main.buildings.list.size() >= 1, "a cena consegue colocar pelo menos um prédio perto da vila")
-	_check(main.workers.list.size() == main.buildings.list.size(), "um trabalhador nasce por prédio, nenhum fica sem gente")
-	for i in main.workers.list.size():
-		_check(main.workers.list[i].job_building == i, "trabalhador %d já nasce alocado no prédio %d" % [i, i])
+	_check(main.buildings.warehouse_id() >= 0, "a cena sempre nasce com um Armazém (é a própria vila)")
+	var extractors: Array = main.buildings.list.filter(func(b): return b.kind != Buildings.Kind.WAREHOUSE)
+	_check(extractors.size() >= 1, "a cena consegue colocar pelo menos um extrator perto da vila")
+	_check(main.workers.list.size() == extractors.size(), "um trabalhador nasce por extrator — o Armazém não tem staff")
+	for building in extractors:
+		_check(building.worker_id != -1, "todo extrator já nasce com trabalhador alocado, nenhum fica sem gente")
 
 	var steps := 0
 	while steps < 3000 and not main.workers.list.all(func(w): return w.state == Worker.State.WORKING):
@@ -695,13 +846,39 @@ func _test_scene_worker_arrives_and_produces() -> void:
 		_check(w.state == Worker.State.WORKING, "todo trabalhador chega e começa a trabalhar dentro de um teto razoável")
 
 	var before := {}
-	for resource in main.buildings.stock:
-		before[resource] = main.buildings.stock[resource]
+	for building in extractors:
+		before[building.cell] = building.buffer
 	for _i in 60:
 		main._process(1.0 / 30.0)
-	for building in main.buildings.list:
-		var resource: String = Buildings.RESOURCE_OF[building.kind]
-		_check(main.buildings.stock[resource] > before[resource], "com trabalhador no posto, o estoque de %s cresce de verdade" % resource)
+	for building in extractors:
+		_check(building.buffer >= before[building.cell], "com trabalhador no posto, o pátio do prédio não fica pra trás (>=, o carregador pode já ter passado)")
+
+	main.queue_free()
+	await process_frame
+
+# O ciclo inteiro da Fase 3: trabalhador produz no pátio, carregador busca e
+# entrega no Armazém, e É SÓ AÍ que o estoque jogável (HUD) sobe. Um teto de
+# passos bem mais largo que o do teste anterior — dá tempo do trabalhador
+# chegar, produzir o suficiente pra valer a viagem (MIN_PICKUP), e do
+# carregador fazer a ida e volta inteira.
+func _test_scene_carrier_delivers_to_warehouse() -> void:
+	var main := _boot_main()
+	await process_frame
+	_check(main.carriers.list.size() == 1, "a cena nasce com um carregador")
+
+	var before := {}
+	for resource in main.buildings.stock:
+		before[resource] = main.buildings.stock[resource]
+
+	var steps := 0
+	var delivered := false
+	while steps < 6000 and not delivered:
+		main._process(1.0 / 30.0)
+		steps += 1
+		for resource in main.buildings.stock:
+			if main.buildings.stock[resource] > before.get(resource, 0.0):
+				delivered = true
+	_check(delivered, "dentro de um teto razoável, o ciclo completo (produzir → coletar → entregar) rende estoque jogável de verdade (%d passos)" % steps)
 
 	main.queue_free()
 	await process_frame
