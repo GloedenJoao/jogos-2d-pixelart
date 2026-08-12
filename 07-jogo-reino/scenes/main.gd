@@ -1,19 +1,26 @@
 extends Node2D
 
-# Fase 6: população. Até a Fase 5, todo trabalhador e o carregador nasciam
-# prontos no primeiro frame — mão de obra era infinita e instantânea. Agora
-# existe uma `Population` que cresce devagar até a capacidade habitacional
-# (soma das Casas construídas), e prédios/carregador entram numa fila
-# (`_pending_jobs`/`_carrier_pending`) preenchida por `_fill_jobs()` conforme
-# gente fica disponível. Sem Casa nenhuma, população não cresce — não dá pra
-# ter trabalhador sem primeiro ter onde morar.
+# Fase 7: progressão. A vila sobe de nível conforme acumula recurso entregue
+# no Armazém (`Progression.add_xp`, chamado em `_advance_progression` a
+# partir do delta de `Buildings.stock` — processamento só CONVERTE 1:1, então
+# a soma total só sobe quando o carregador entrega algo novo de verdade).
+# Cada nível aumenta o ALCANCE DE EXPLORAÇÃO: o raio que a névoa revela ao
+# redor da vila cresce de verdade, não é só um número guardado.
 #
-# Deliberadamente NÃO modela necessidades (comida, água potável, descanso)
-# ainda — exigiria uma fonte de comida que nenhuma fase anterior construiu
-# (ver o comentário em population.gd). Fica pra quando essa cadeia existir.
+# "Desbloqueio de prédios" por nível, que o plano do projeto também pede pra
+# esta fase, fica de fora de propósito — todo prédio ainda nasce de uma vez
+# em `_place_starting_buildings`, antes de existir qualquer conceito de
+# nível; gatear isso pediria reescrever a colocação de prédios pra ser
+# progressiva, mudança de arquitetura maior que o resto desta fase (ver o
+# comentário em progression.gd).
 #
 # Tudo daqui pra baixo é histórico das fases anteriores, sem mudança de
 # arquitetura — ver a quebra completa em docs/plano-projeto7-reino.md:
+#
+# Fase 6 — população: até a Fase 5, todo trabalhador e o carregador
+# nasciam prontos no primeiro frame. Agora existe uma `Population` que
+# cresce devagar até a capacidade habitacional (soma das Casas), e
+# prédios/carregador entram numa fila preenchida conforme gente disponível.
 #
 # Fase 5 — energia: o Gerador a Lenha queima madeira do Armazém e cobre um
 # raio em células — todo prédio de extração/processamento dentro do raio
@@ -57,7 +64,6 @@ const PAN_SPEED := 640.0
 const ZOOM_MIN := 0.5
 const ZOOM_MAX := 2.0
 const ZOOM_STEP := 1.1
-const START_REVEAL_RADIUS := 9.0
 const SCOUT_RADIUS := 6.0
 
 const C_FOG_UNSEEN := Color(0.0, 0.0, 0.0, 0.93)
@@ -149,6 +155,8 @@ var buildings := Buildings.new()
 var workers := Workers.new()
 var carriers := Carriers.new()
 var population := Population.new()
+var progression := Progression.new()
+var _last_total_stock := 0.0
 var _village_cell: Vector2i
 var _pending_jobs: Array = []   # ids de Buildings.list esperando trabalhador
 var _carrier_pending := false
@@ -214,7 +222,7 @@ func _ready() -> void:
 		_pending_jobs.append(i)
 	_carrier_pending = true
 
-	_vision_sources.append(Vector3(_village_cell.x, _village_cell.y, START_REVEAL_RADIUS))
+	_vision_sources.append(Vector3(_village_cell.x, _village_cell.y, progression.reveal_radius()))
 	fog.update_visibility(_vision_sources)
 	_fog_layer.queue_redraw()
 
@@ -353,12 +361,39 @@ func _process(delta: float) -> void:
 	workers.advance(delta, pathfinder)
 	buildings.advance(delta, map, workers)
 	carriers.advance(delta, pathfinder, buildings)
+	_advance_progression()
 	pathfinder.decay(delta)
 	_sync_building_nodes()
 	_sync_worker_nodes()
 	_sync_carrier_nodes()
 	_update_hud()
 	_pan_with_keys(delta)
+
+# XP é o total de recurso já entregue no Armazém — soma de todo `stock`,
+# porque processamento (Fase 4) só CONVERTE 1:1 (madeira vira tábua sem
+# mudar a soma), então normalmente o único jeito da soma total subir é o
+# carregador entregar algo novo. Só "normalmente": o Gerador (Fase 5) BAIXA
+# essa soma de verdade ao queimar madeira como combustível — por isso só
+# somamos XP quando `gained` é positivo (`if gained > 0.0`), nunca descontamos
+# quando é negativo. Isso significa `progression.xp` não é mais reconstruível
+# a partir de `buildings.stock` sozinho (achado depurando esta fase: os dois
+# pareciam dever bater e não batiam — o gerador consumindo combustível é a
+# explicação, não um bug). Progresso é permanente de propósito: não faria
+# sentido perder nível porque o Gerador gastou madeira depois.
+func _advance_progression() -> void:
+	var total := 0.0
+	for amount in buildings.stock.values():
+		total += amount
+	var gained: float = total - _last_total_stock
+	_last_total_stock = total
+	if gained > 0.0:
+		progression.add_xp(gained)
+
+	var radius := progression.reveal_radius()
+	if not _vision_sources.is_empty() and _vision_sources[0].z != radius:
+		_vision_sources[0].z = radius
+		fog.update_visibility(_vision_sources)
+		_fog_layer.queue_redraw()
 
 func _pan_with_keys(delta: float) -> void:
 	var move := Vector2.ZERO
@@ -528,7 +563,7 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção — Fase 6 (população)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção — Fase 7 (progressão)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
@@ -545,10 +580,11 @@ func _build_hud() -> void:
 func _update_hud() -> void:
 	if _stock_label == null:
 		return
-	_stock_label.text = "madeira: %.1f    pedra: %.1f    tábua: %.1f    bloco: %.1f\npopulação: %d / %d (%d empregada)" % [
+	_stock_label.text = "madeira: %.1f    pedra: %.1f    tábua: %.1f    bloco: %.1f\npopulação: %d / %d (%d empregada)\nvila: nível %d (%.0f/%.0f XP) — alcance %d" % [
 		buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0),
 		buildings.stock.get("tábua", 0.0), buildings.stock.get("bloco", 0.0),
 		int(population.count), buildings.housing_capacity(), population.employed(),
+		progression.level, progression.xp, Progression.XP_PER_LEVEL, int(progression.reveal_radius()),
 	]
 
 # ---- Fase 2: prédios e trabalhador ----
