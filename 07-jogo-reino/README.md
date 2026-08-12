@@ -2,16 +2,21 @@
 
 City-builder de sobrevivência e automação inspirado em Timberborn: explorar um mapa físico, extrair recursos finitos, transportar com NPCs carregadores, processar e sustentar população e energia. Combate fica fora do escopo por decisão explícita do João. Design completo em [`docs/plano-projeto7-reino.md`](../docs/plano-projeto7-reino.md), incluindo a quebra em fases.
 
-## Estado atual: Fase 7 — progressão
+## Estado atual: Mina + Forja — terceira cadeia de recurso
 
-A vila sobe de nível conforme acumula recurso entregue no Armazém, e cada nível aumenta o **alcance de exploração** — o raio que a névoa revela ao redor da vila cresce de verdade, não é só um número guardado.
+Minério vira lingote, fechando a lacuna que a Fase 4 deixou explicitamente em aberto (não existia extrator de minério ainda). A Mina senta sobre o depósito de colina (`MapGen.Kind.HILLS`) que o mapa gera desde a Fase 1 sem nenhum prédio explorando ele, e a Forja processa minério em lingote — mesma arquitetura de sempre, sem sistema novo.
+
+- [`scripts/buildings.gd`](scripts/buildings.gd) — `Kind.MINE` e `Kind.FORGE` são só entradas novas nos dicts dirigidos por `Kind` (`RESOURCE_OF`, `DEPOSIT_KIND_OF`, `PRODUCTION_PER_SECOND`, `PROCESS_RECIPES`); `advance()`, `_advance_extractor()` e `_advance_processor()` não mudaram uma linha — a Mina extrai pro próprio pátio como Posto de Lenhador/Pedreira (precisa de `Carrier` pra virar estoque), a Forja lê/escreve direto no estoque como Serraria/Oficina de Pedra.
+- **Cor do marcador da Mina escolhida fria de propósito** (slate azul-arroxeado, `4a4a5c`) — o chão de colina onde ela nasce já é tingido de laranja pelo próprio depósito de minério (mesma paleta quente da Pedreira que causou a camuflagem da Fase 2); um marcador quente ali repetiria o mesmo erro.
+- [`tests/run_tests.gd`](tests/run_tests.gd) — 262 asserções: as anteriores, mais extração da Mina e processamento 1:1 da Forja isolados, e um teste de cena de ponta a ponta (extrair minério → carregador entrega → Forja processa → lingote de verdade no estoque).
+
+## Fases anteriores
+
+**Fase 7 — progressão.** A vila sobe de nível conforme acumula recurso entregue no Armazém, e cada nível aumenta o **alcance de exploração** — o raio que a névoa revela ao redor da vila cresce de verdade, não é só um número guardado.
 
 - [`scripts/progression.gd`](scripts/progression.gd) — `Progression.xp` cresce com todo recurso entregue (qualquer tipo — madeira, pedra, tábua, bloco — é XP puro por volume); ao cruzar `XP_PER_LEVEL`, sobe de nível e carrega o excedente pro próximo. `reveal_radius()` cresce por nível até um teto definido (`REVEAL_RADIUS_BY_LEVEL`).
 - **XP não é reconstruível a partir da soma do estoque** — achado depurando esta fase, registrado em `main.gd _advance_progression()`: o Gerador (Fase 5) baixa a soma do estoque de verdade ao queimar madeira como combustível, mas XP só soma ganhos, nunca desconta consumo. Progresso é permanente de propósito — não faria sentido perder nível porque o Gerador gastou madeira depois.
 - **"Desbloqueio de prédios" por nível, que o plano do projeto também pede pra esta fase, ficou de fora de propósito** — todo prédio ainda nasce de uma vez em `_place_starting_buildings`, antes de existir qualquer conceito de nível; gatear isso pediria reescrever a colocação de prédios pra ser progressiva, mudança de arquitetura maior que o resto desta fase.
-- [`tests/run_tests.gd`](tests/run_tests.gd) — 249 asserções (Fase 0 + 1 + 2 + 3 + 4 + 5 + 6 + 7): as anteriores, mais nível subindo e carregando o excedente de XP, um ganho grande subindo vários níveis de uma vez, XP zero/negativo sem efeito, teto no último nível definido, e a cena real mostrando uma célula que só passa a ser explorada depois que a vila sobe de nível de verdade.
-
-## Fases anteriores
 
 **Fase 6 — população.** Mão de obra deixa de ser infinita e instantânea: até a Fase 5, todo trabalhador e o carregador nasciam prontos no primeiro frame. Agora existe uma população (`population.gd`) que cresce devagar até a capacidade habitacional (soma das Casas construídas — `Kind.HOUSE`), e prédios que precisam de trabalhador entram numa fila preenchida conforme `population.available()` permite — a vila nasce **vazia** e se povoa aos poucos. Deliberadamente sem necessidades (comida/água potável/descanso) — exigiria uma fonte de comida que nenhuma fase construiu.
 
@@ -31,7 +36,7 @@ A vila sobe de nível conforme acumula recurso entregue no Armazém, e cada nív
 - **Lagos de verdade, não pintados**: `_seed_lakes()` semeia água nas células mais baixas do relevo (limiar e volume calibrados rodando o autômato de verdade, não chutados — a primeira tentativa inundava 29% do mapa) e deixa o `WaterSim` da Fase 0 acomodar antes do primeiro desenho. O que aparece na tela é `water_sim.water_at()` de verdade, não uma cor decorativa — cavar canal/represar (Fase 2+) vai mexer nesse mesmo estado.
 - **Bug real pego pela integração, não por um teste isolado:** o `water_sim.gd` da Fase 0 conservava água em qualquer teste em linha (no máximo 2 vizinhos por célula), mas rodar `WaterSim` sobre um mapa 2D de verdade (células com até 4 vizinhos mais baixos ao mesmo tempo) expôs um cálculo de fluxo que criava água do nada quando uma célula tentava mandar mais do que tinha. Corrigido com um passo de normalização por célula antes de aplicar qualquer fluxo (ver o comentário em `water_sim.gd::_tick`). Isso é a razão de existir `_test_map_height_feeds_water_sim` e `_test_conservation_holds_with_a_peak_surrounded_on_four_sides`.
 
-[`tests/visual_capture.gd`](tests/visual_capture.gd) captura a vila **vazia** no primeiro frame (população 0/6), depois **povoada**, o carregador entregando no Armazém, a cadeia de processamento, a vila **subindo de nível** (alcance de exploração visivelmente maior), mapa depois de explorar e vista afastada, em `.visual_capture/` (gitignored).
+[`tests/visual_capture.gd`](tests/visual_capture.gd) captura a vila **vazia** no primeiro frame (população 0/6), depois **povoada**, o carregador entregando no Armazém, a cadeia de processamento madeira/pedra, a cadeia minério/lingote, a vila **subindo de nível** (alcance de exploração visivelmente maior), mapa depois de explorar e vista afastada, em `.visual_capture/` (gitignored).
 
 ## Rodar os testes
 

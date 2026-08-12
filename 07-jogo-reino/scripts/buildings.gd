@@ -48,23 +48,36 @@ extends RefCounted
 # habitacional (`housing_capacity()`). É a `Population` (population.gd) quem
 # lê esse número pra saber até onde a população pode crescer — este arquivo
 # só expõe a capacidade, não decide quem nasce nem quando.
+#
+# Depois das 8 fases do plano original: Mina + Forja completam a terceira
+# cadeia de recursos. O depósito de minério (`MapGen.Kind.HILLS`) existe e
+# aparece no mapa desde a Fase 1 — só nunca tinha prédio nenhum que o usasse.
+# Não precisou de sistema novo: Mina é só mais um extrator (`RESOURCE_OF` +
+# `DEPOSIT_KIND_OF`) e Forja é só mais uma receita (`PROCESS_RECIPES`), a
+# mesma arquitetura de Posto de Lenhador/Pedreira e Serraria/Oficina de
+# Pedra reaproveitada sem mudar uma linha da lógica de `advance()`.
 
-enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR, HOUSE }
+enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR, HOUSE, MINE, FORGE }
 
 const RESOURCE_OF := {
 	Kind.LUMBERJACK: "madeira",
 	Kind.QUARRY: "pedra",
+	Kind.MINE: "minério",
 }
 const DEPOSIT_KIND_OF := {
 	Kind.LUMBERJACK: MapGen.Kind.FOREST,
 	Kind.QUARRY: MapGen.Kind.STONE,
+	Kind.MINE: MapGen.Kind.HILLS,
 }
 # Unidades por segundo, trabalhador presente. Mesma ordem de grandeza do
 # depósito máximo (map_gen.gd: 40-70) — um bosque sustenta minutos de corte
-# contínuo, não segundos nem horas.
+# contínuo, não segundos nem horas. Minério é o mais lento dos três: colina
+# fica mais longe da vila (Fase 1: só nasce acima de uma altura mínima), e o
+# plano do projeto já descreve minério como o recurso mais raro/valioso.
 const PRODUCTION_PER_SECOND := {
 	Kind.LUMBERJACK: 1.0,
 	Kind.QUARRY: 0.8,
+	Kind.MINE: 0.6,
 }
 # Quanto cabe no pátio antes de precisar de um carregador. Baixo o bastante
 # pra um único carregador conseguir dar conta de dois extratores sem deixar
@@ -81,6 +94,7 @@ const EXTRACTOR_BUFFER_CAP := 15.0
 const PROCESS_RECIPES := {
 	Kind.SAWMILL: {"input": "madeira", "output": "tábua", "rate": 0.6},
 	Kind.STONE_WORKSHOP: {"input": "pedra", "output": "bloco", "rate": 0.5},
+	Kind.FORGE: {"input": "minério", "output": "lingote", "rate": 0.4},
 }
 
 # Alcance do gerador, em células — dá pra cobrir a Serraria/Oficina de
@@ -113,7 +127,10 @@ class Building:
 		cell = c
 
 var list: Array[Building] = []
-var stock: Dictionary = {"madeira": 0.0, "pedra": 0.0, "tábua": 0.0, "bloco": 0.0}
+var stock: Dictionary = {
+	"madeira": 0.0, "pedra": 0.0, "minério": 0.0,
+	"tábua": 0.0, "bloco": 0.0, "lingote": 0.0,
+}
 
 func place(kind: int, cell: Vector2i) -> int:
 	list.append(Building.new(kind, cell))

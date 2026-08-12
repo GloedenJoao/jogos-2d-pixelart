@@ -76,6 +76,9 @@ func _initialize() -> void:
 	_test_buildings_processor_conversion_is_1_to_1()
 	_test_buildings_processor_throttled_by_available_input()
 
+	_test_buildings_mine_extracts_ore_like_the_other_extractors()
+	_test_buildings_forge_converts_ore_to_lingote_1_to_1()
+
 	_test_buildings_powered_without_worker_still_produces()
 	_test_buildings_staffed_without_any_generator_still_produces()
 	_test_buildings_neither_staffed_nor_powered_does_not_produce()
@@ -110,6 +113,7 @@ func _initialize() -> void:
 	await _test_scene_progression_grows_reveal_radius()
 	await _test_scene_carrier_delivers_to_warehouse()
 	await _test_scene_processing_chain_produces_tabua_and_bloco()
+	await _test_scene_ore_chain_produces_lingote()
 
 	print("")
 	if _fail == 0:
@@ -742,6 +746,51 @@ func _test_buildings_processor_throttled_by_available_input() -> void:
 	b.advance(5.0, MapGen.new(), mgr)
 	_near(b.stock["tábua"], tabua_before, 0.0001, "sem mais insumo, Serraria para sozinha (trabalhador continua WORKING)")
 
+# ---- Mina + Forja (terceira cadeia: minério → lingote) ----
+# Reaproveitam 100% do código genérico de extração/processamento (advance,
+# buffer, receitas) — estes testes só provam que a entrada nos dicts
+# (RESOURCE_OF/DEPOSIT_KIND_OF/PRODUCTION_PER_SECOND/PROCESS_RECIPES) está
+# correta, não repetem a lógica genérica já coberta acima.
+
+func _test_buildings_mine_extracts_ore_like_the_other_extractors() -> void:
+	var m := MapGen.new()
+	m.generate(20, 20, 9001)
+	var hills_cell := Buildings.nearest_deposit_cell(m, MapGen.Kind.HILLS, Vector2i(10, 10), 15)
+	_check(hills_cell.x >= 0, "o mapa de teste tem colina (depósito de minério) a uma distância alcançável")
+	if hills_cell.x < 0:
+		return
+
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.MINE, hills_cell)
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+
+	b.advance(1.0, m, mgr)
+	_near(b.list[id].buffer, 0.0, 0.0001, "sem trabalhador alocado, Mina não acumula nada no pátio")
+
+	b.assign(id, w)
+	w.state = Worker.State.WORKING
+	b.advance(1.0, m, mgr)
+	_check(b.list[id].buffer > 0.0, "trabalhador WORKING na Mina acumula minério no pátio de verdade")
+
+	var taken := b.collect(id, 999.0)
+	b.deliver("minério", taken)
+	_check(b.stock["minério"] > 0.0, "minério coletado do pátio vira estoque jogável (mesmo caminho collect/deliver dos outros extratores)")
+
+func _test_buildings_forge_converts_ore_to_lingote_1_to_1() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.FORGE, Vector2i(4, 4))
+	b.stock["minério"] = 20.0
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(id, w)
+	w.state = Worker.State.WORKING
+
+	b.advance(2.0, MapGen.new(), mgr)
+	var consumed: float = 20.0 - b.stock["minério"]
+	_near(b.stock["lingote"], consumed, 0.0001, "cada unidade de minério consumida vira exatamente uma de lingote (1:1)")
+	_check(consumed > 0.0, "consumiu minério de verdade (o teste não é vácuo)")
+
 # ---- Fase 5: energia (Gerador a Lenha, regra "energia OU trabalhador") ----
 
 func _test_buildings_powered_without_worker_still_produces() -> void:
@@ -1230,6 +1279,36 @@ func _test_scene_processing_chain_produces_tabua_and_bloco() -> void:
 	_check(got_tabua, "a cadeia inteira rende tábua de verdade dentro de um teto razoável (%d passos)" % steps)
 	_check(got_bloco, "a cadeia inteira rende bloco de verdade dentro de um teto razoável (%d passos)" % steps)
 	_check(was_powered, "o bloco só saiu porque o Gerador alimentou a Oficina de Pedra em algum momento (sem trabalhador nenhum)")
+
+	main.queue_free()
+	await process_frame
+
+# Terceira cadeia de ponta a ponta: Mina extrai minério da colina (Kind.HILLS,
+# depósito sem uso desde a Fase 1), carregador entrega no Armazém, Forja
+# processa em lingote — mesmo teste que a cadeia madeira/pedra, só que sem
+# nenhum atalho por energia (Mina e Forja sempre têm trabalhador próprio).
+func _test_scene_ore_chain_produces_lingote() -> void:
+	var main := _boot_main()
+	await process_frame
+	var mine: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.MINE)
+	var forge: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.FORGE)
+	_check(forge.size() == 1, "a cena sempre coloca a Forja perto da vila")
+	if mine.is_empty():
+		# A semente de teste fixa (9001, via _boot_main) pode não ter colina
+		# dentro do raio de busca — mesma regra de "explore mais" das outras
+		# duas cadeias. Sem Mina, não tem como a Forja receber minério; nada
+		# mais deste teste é verificável.
+		main.queue_free()
+		await process_frame
+		return
+
+	var steps := 0
+	var got_lingote := false
+	while steps < 10000 and not got_lingote:
+		main._process(1.0 / 30.0)
+		steps += 1
+		got_lingote = main.buildings.stock.get("lingote", 0.0) > 0.0
+	_check(got_lingote, "a cadeia minério → lingote rende resultado de verdade dentro de um teto razoável (%d passos)" % steps)
 
 	main.queue_free()
 	await process_frame
