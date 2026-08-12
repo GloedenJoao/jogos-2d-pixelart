@@ -1,16 +1,25 @@
 extends Node2D
 
-# Fase 5: energia. O Gerador a Lenha queima madeira do Armazém e cobre um
-# raio em células — todo prédio de extração/processamento dentro do raio
-# produz mesmo SEM trabalhador, desde que o gerador tenha combustível.
-# "Energia OU trabalhador", não "e": a Oficina de Pedra nasce de propósito
-# SEM trabalhador (única exceção — ver o comentário em `_ready()`) pra
-# provar que o raio sozinho basta. O gerador só acende quando existe alguém
-# no raio que realmente precisa dele (`Buildings._compute_powered`), senão
-# "energia" seria só desperdiçar madeira à toa.
+# Fase 6: população. Até a Fase 5, todo trabalhador e o carregador nasciam
+# prontos no primeiro frame — mão de obra era infinita e instantânea. Agora
+# existe uma `Population` que cresce devagar até a capacidade habitacional
+# (soma das Casas construídas), e prédios/carregador entram numa fila
+# (`_pending_jobs`/`_carrier_pending`) preenchida por `_fill_jobs()` conforme
+# gente fica disponível. Sem Casa nenhuma, população não cresce — não dá pra
+# ter trabalhador sem primeiro ter onde morar.
+#
+# Deliberadamente NÃO modela necessidades (comida, água potável, descanso)
+# ainda — exigiria uma fonte de comida que nenhuma fase anterior construiu
+# (ver o comentário em population.gd). Fica pra quando essa cadeia existir.
 #
 # Tudo daqui pra baixo é histórico das fases anteriores, sem mudança de
 # arquitetura — ver a quebra completa em docs/plano-projeto7-reino.md:
+#
+# Fase 5 — energia: o Gerador a Lenha queima madeira do Armazém e cobre um
+# raio em células — todo prédio de extração/processamento dentro do raio
+# produz mesmo SEM trabalhador, desde que o gerador tenha combustível.
+# "Energia OU trabalhador", não "e" — a Oficina de Pedra nasce sem
+# trabalhador de propósito pra provar que o raio sozinho basta.
 #
 # Fase 4 — processamento: Serraria e Oficina de Pedra transformam bruto do
 # Armazém em processado (tábua/bloco), 1:1, throttladas pelo estoque de
@@ -104,6 +113,7 @@ const C_BUILDING := {
 	Buildings.Kind.SAWMILL: Color("d1a63e"),
 	Buildings.Kind.STONE_WORKSHOP: Color("6b7280"),
 	Buildings.Kind.GENERATOR: Color("4a6b3a"),
+	Buildings.Kind.HOUSE: Color("6a8caf"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
@@ -112,6 +122,7 @@ const C_BUILDING_ROOF := {
 	Buildings.Kind.SAWMILL: Color("8f6f2c"),
 	Buildings.Kind.STONE_WORKSHOP: Color("454a54"),
 	Buildings.Kind.GENERATOR: Color("2e4526"),
+	Buildings.Kind.HOUSE: Color("41597a"),
 }
 const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
@@ -137,6 +148,10 @@ var pathfinder := Pathfinder.new()
 var buildings := Buildings.new()
 var workers := Workers.new()
 var carriers := Carriers.new()
+var population := Population.new()
+var _village_cell: Vector2i
+var _pending_jobs: Array = []   # ids de Buildings.list esperando trabalhador
+var _carrier_pending := false
 var camera: Camera2D
 var _fog_layer: Node2D
 var _water_layer: Node2D
@@ -162,9 +177,9 @@ func _ready() -> void:
 	fog.setup(MAP_COLS, MAP_ROWS)
 	_seed_lakes()
 
-	var start := Vector2i(MAP_COLS / 2, MAP_ROWS / 2)
+	_village_cell = Vector2i(MAP_COLS / 2, MAP_ROWS / 2)
 	pathfinder.setup(MAP_COLS, MAP_ROWS, CELL)
-	_place_starting_buildings(start)
+	_place_starting_buildings(_village_cell)
 
 	_build_world()
 	_build_hud()
@@ -183,25 +198,48 @@ func _ready() -> void:
 	# ela só produz porque está no raio do Gerador, não por acaso ter os
 	# dois. Posto de Lenhador, Pedreira e Serraria continuam com trabalhador
 	# como sempre.
+	#
+	# A partir da Fase 6, "precisa de trabalhador" não é mais "nasce com um
+	# trabalhador": os prédios entram numa FILA (`_pending_jobs`), e quem
+	# preenche a fila é `_fill_jobs()` em `_process()`, conforme a população
+	# cresce (`Population`) até a capacidade das Casas. Sem isso, mão de obra
+	# continuaria sendo infinita e instantânea, e Casa não teria propósito
+	# nenhum no jogo.
 	for i in buildings.list.size():
 		var building := buildings.list[i]
 		if building.kind == Buildings.Kind.WAREHOUSE or building.kind == Buildings.Kind.GENERATOR:
 			continue
-		if building.kind == Buildings.Kind.STONE_WORKSHOP:
+		if building.kind == Buildings.Kind.HOUSE or building.kind == Buildings.Kind.STONE_WORKSHOP:
 			continue
-		var worker := workers.spawn(Vector2(start) * CELL)
-		buildings.assign(i, worker)
-		workers.send_to(worker, _work_spot_for(building), pathfinder)
-		_spawn_worker_node(worker)
+		_pending_jobs.append(i)
+	_carrier_pending = true
 
-	var carrier := carriers.spawn(Vector2(start) * CELL)
-	_spawn_carrier_node(carrier)
-
-	_vision_sources.append(Vector3(start.x, start.y, START_REVEAL_RADIUS))
+	_vision_sources.append(Vector3(_village_cell.x, _village_cell.y, START_REVEAL_RADIUS))
 	fog.update_visibility(_vision_sources)
 	_fog_layer.queue_redraw()
 
-	camera.position = Vector2(start) * CELL
+	camera.position = Vector2(_village_cell) * CELL
+
+# Preenche vagas (prédio esperando trabalhador, ou o carregador) uma a uma,
+# só enquanto a população tiver gente disponível (`Population.available()`).
+# Ordem da fila = prioridade: extratores antes da Serraria (que depende da
+# produção deles chegar no Armazém primeiro), carregador por último (não
+# adianta ter alguém pra transportar antes de existir o que transportar).
+func _fill_jobs() -> void:
+	while not _pending_jobs.is_empty() and population.available() > 0:
+		var building_id: int = _pending_jobs.pop_front()
+		population.employ()
+		var building := buildings.list[building_id]
+		var worker := workers.spawn(Vector2(_village_cell) * CELL)
+		buildings.assign(building_id, worker)
+		workers.send_to(worker, _work_spot_for(building), pathfinder)
+		_spawn_worker_node(worker)
+
+	if _carrier_pending and population.available() > 0:
+		population.employ()
+		_carrier_pending = false
+		var carrier := carriers.spawn(Vector2(_village_cell) * CELL)
+		_spawn_carrier_node(carrier)
 
 # O Armazém nasce na própria célula da vila — é o destino fixo do
 # carregador, não precisa buscar depósito nenhum. Posto de Lenhador e
@@ -240,6 +278,16 @@ func _place_starting_buildings(start: Vector2i) -> void:
 	# trabalhador de propósito.
 	var generator_cell := _free_cell_near(start, Vector2i(-2, 0), occupied)
 	buildings.place(Buildings.Kind.GENERATOR, generator_cell)
+	occupied[generator_cell] = true
+
+	# Duas Casas (Fase 6): capacidade suficiente pra cobrir as vagas iniciais
+	# com folga (ver Buildings.HOUSE_CAPACITY). Não dependem de depósito nem
+	# de posição especial, só de uma célula livre perto da vila.
+	var house_a_cell := _free_cell_near(start, Vector2i(2, 0), occupied)
+	buildings.place(Buildings.Kind.HOUSE, house_a_cell)
+	occupied[house_a_cell] = true
+	var house_b_cell := _free_cell_near(start, Vector2i(0, 2), occupied)
+	buildings.place(Buildings.Kind.HOUSE, house_b_cell)
 
 	var solids: Array = []
 	for building in buildings.list:
@@ -300,6 +348,8 @@ func _seed_lakes() -> void:
 
 func _process(delta: float) -> void:
 	map.advance(delta)
+	population.advance(delta, buildings.housing_capacity())
+	_fill_jobs()
 	workers.advance(delta, pathfinder)
 	buildings.advance(delta, map, workers)
 	carriers.advance(delta, pathfinder, buildings)
@@ -478,7 +528,7 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção — Fase 5 (energia)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção — Fase 6 (população)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
@@ -495,9 +545,10 @@ func _build_hud() -> void:
 func _update_hud() -> void:
 	if _stock_label == null:
 		return
-	_stock_label.text = "madeira: %.1f    pedra: %.1f    tábua: %.1f    bloco: %.1f" % [
+	_stock_label.text = "madeira: %.1f    pedra: %.1f    tábua: %.1f    bloco: %.1f\npopulação: %d / %d (%d empregada)" % [
 		buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0),
 		buildings.stock.get("tábua", 0.0), buildings.stock.get("bloco", 0.0),
+		int(population.count), buildings.housing_capacity(), population.employed(),
 	]
 
 # ---- Fase 2: prédios e trabalhador ----

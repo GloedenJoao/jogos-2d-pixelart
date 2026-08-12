@@ -83,6 +83,13 @@ func _initialize() -> void:
 	_test_buildings_generator_only_burns_fuel_when_something_needs_it()
 	_test_buildings_generator_runs_out_of_fuel_stops_powering()
 
+	_test_buildings_housing_capacity()
+	_test_population_starts_at_zero()
+	_test_population_grows_toward_capacity_and_caps()
+	_test_population_does_not_grow_without_housing()
+	_test_population_employ_respects_availability()
+	_test_population_available_grows_as_count_grows()
+
 	_test_carrier_picks_the_fullest_buffer()
 	_test_carrier_full_round_trip_delivers_to_warehouse()
 	_test_carrier_ignores_buffers_below_min_pickup()
@@ -93,6 +100,7 @@ func _initialize() -> void:
 	await _test_scene_click_reveals_fog()
 	await _test_scene_pan_moves_camera_within_limits()
 	await _test_scene_worker_arrives_and_produces()
+	await _test_scene_population_grows_up_to_two_houses()
 	await _test_scene_carrier_delivers_to_warehouse()
 	await _test_scene_processing_chain_produces_tabua_and_bloco()
 
@@ -815,6 +823,58 @@ func _test_buildings_generator_runs_out_of_fuel_stops_powering() -> void:
 	_near(b.stock["bloco"], bloco_when_out_of_fuel, 0.0001, "sem combustível, o gerador para de alimentar — Oficina de Pedra para junto")
 	_check(not b.list[id].powered, "powered vira false assim que o gerador fica sem combustível")
 
+# ---- Fase 6: população (population.gd, Buildings.housing_capacity) ----
+
+func _test_buildings_housing_capacity() -> void:
+	var b := Buildings.new()
+	_check(b.housing_capacity() == 0, "sem casa nenhuma, capacidade é zero")
+	b.place(Buildings.Kind.HOUSE, Vector2i(1, 1))
+	_check(b.housing_capacity() == Buildings.HOUSE_CAPACITY, "uma casa soma a capacidade dela")
+	b.place(Buildings.Kind.HOUSE, Vector2i(2, 2))
+	_check(b.housing_capacity() == Buildings.HOUSE_CAPACITY * 2, "duas casas somam o dobro")
+	b.place(Buildings.Kind.LUMBERJACK, Vector2i(3, 3))
+	_check(b.housing_capacity() == Buildings.HOUSE_CAPACITY * 2, "prédio que não é casa não soma nada")
+
+func _test_population_starts_at_zero() -> void:
+	var p := Population.new()
+	_check(p.count == 0.0, "população nasce em zero")
+	_check(p.available() == 0, "sem população, nada disponível pra empregar")
+
+func _test_population_grows_toward_capacity_and_caps() -> void:
+	var p := Population.new()
+	p.advance(1.0, 6)
+	_near(p.count, Population.GROWTH_PER_SECOND, 0.0001, "cresce à taxa esperada")
+
+	# delta gigante não pode passar do teto — sem casa nova, população não
+	# nasce do nada além da capacidade habitacional.
+	p.advance(1000.0, 6)
+	_near(p.count, 6.0, 0.0001, "cresce até o teto e para exatamente nele")
+
+	p.advance(10.0, 6)
+	_near(p.count, 6.0, 0.0001, "não ultrapassa o teto mesmo com mais tempo")
+
+func _test_population_does_not_grow_without_housing() -> void:
+	var p := Population.new()
+	p.advance(10.0, 0)
+	_near(p.count, 0.0, 0.0001, "capacidade zero (nenhuma casa) significa população nunca cresce")
+
+func _test_population_employ_respects_availability() -> void:
+	var p := Population.new()
+	p.advance(10.0, 3)   # população cheia em 3
+
+	_check(p.employ(), "primeiro emprego disponível é aceito")
+	_check(p.employ(), "segundo também")
+	_check(p.employ(), "terceiro também — exatamente a capacidade")
+	_check(not p.employ(), "quarto emprego falha: não sobrou ninguém disponível")
+	_check(p.employed() == 3, "employed() reflete quantos foram empregados de verdade")
+	_check(p.available() == 0, "disponível zera depois de empregar todo mundo")
+
+func _test_population_available_grows_as_count_grows() -> void:
+	var p := Population.new()
+	_check(p.available() == 0, "nada disponível em t=0")
+	p.advance(1.0 / Population.GROWTH_PER_SECOND, 10)   # ~1.0 de população
+	_check(p.available() >= 1, "depois de crescer o suficiente, sobra gente disponível pra empregar")
+
 # ---- Fase 3: carregador (carrier.gd / carriers.gd) ----
 
 func _open_pathfinder(cols: int = 20, rows: int = 20, cell: float = 32.0) -> Pathfinder:
@@ -986,35 +1046,69 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	_check(main.buildings.warehouse_id() >= 0, "a cena sempre nasce com um Armazém (é a própria vila)")
 
 	# Nem todo prédio de produção tem trabalhador nesta cena de propósito: o
-	# Armazém e o Gerador são infraestrutura passiva, e a Oficina de Pedra
-	# nasce sem trabalhador nenhum pra provar "energia OU trabalhador" (ver
-	# o comentário em main.gd _ready()).
-	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP]
+	# Armazém, o Gerador e as Casas são infraestrutura passiva, e a Oficina
+	# de Pedra nasce sem trabalhador nenhum pra provar "energia OU
+	# trabalhador" (ver o comentário em main.gd _ready()).
+	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE]
 	var staffable: Array = main.buildings.list.filter(func(b): return not (b.kind in unstaffed_kinds))
 	_check(staffable.size() >= 1, "a cena consegue colocar pelo menos um prédio com trabalhador")
-	_check(main.workers.list.size() == staffable.size(), "um trabalhador por prédio staffável, nenhum fica sem gente")
+
+	# Fase 6: mão de obra não é mais instantânea — a população começa em
+	# zero, então no primeiro frame ninguém tem trabalhador ainda nenhum.
+	_check(main.workers.list.is_empty(), "no primeiro frame ainda não há trabalhador nenhum — população começa em zero")
 	for building in staffable:
-		_check(building.worker_id != -1, "todo prédio staffável já nasce com trabalhador alocado")
+		_check(building.worker_id == -1, "prédio staffável espera na fila até a população crescer o bastante")
 
 	var workshop_matches: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
-	if workshop_matches.size() > 0:
-		_check(workshop_matches[0].worker_id == -1, "a Oficina de Pedra nasce sem trabalhador — energia é quem sustenta ela")
 
+	# `Array.all()` num array vazio devolve true (vácuo) — por isso o
+	# tamanho entra na condição também, senão o loop sairia no passo 0 antes
+	# de qualquer trabalhador sequer nascer.
 	var steps := 0
-	while steps < 3000 and not main.workers.list.all(func(w): return w.state == Worker.State.WORKING):
+	while steps < 3000 and (main.workers.list.size() < staffable.size() or not main.workers.list.all(func(w): return w.state == Worker.State.WORKING)):
 		main._process(1.0 / 30.0)
 		steps += 1
+	_check(main.workers.list.size() == staffable.size(), "com tempo suficiente, todo prédio staffável acaba ganhando um trabalhador (%d passos)" % steps)
 	for w in main.workers.list:
 		_check(w.state == Worker.State.WORKING, "todo trabalhador chega e começa a trabalhar dentro de um teto razoável")
+	if workshop_matches.size() > 0:
+		_check(workshop_matches[0].worker_id == -1, "a Oficina de Pedra nunca ganha trabalhador — energia é quem sustenta ela")
 
+	# Soma pátio + estoque já entregue, não só o pátio: o carregador só MOVE
+	# produção de um pro outro, nunca destrói — checar os dois juntos é
+	# imune ao carregador ter passado bem no meio da janela de medição
+	# (checar só o pátio, isolado, é exatamente o que flertava com falso
+	# negativo aqui).
 	var extractors: Array = staffable.filter(func(b): return Buildings.RESOURCE_OF.has(b.kind))
 	var before := {}
 	for building in extractors:
-		before[building.cell] = building.buffer
+		var resource: String = Buildings.RESOURCE_OF[building.kind]
+		before[building.cell] = building.buffer + main.buildings.stock.get(resource, 0.0)
 	for _i in 60:
 		main._process(1.0 / 30.0)
 	for building in extractors:
-		_check(building.buffer >= before[building.cell], "com trabalhador no posto, o pátio do extrator não fica pra trás (>=, o carregador pode já ter passado)")
+		var resource: String = Buildings.RESOURCE_OF[building.kind]
+		var after: float = building.buffer + main.buildings.stock.get(resource, 0.0)
+		_check(after >= before[building.cell], "com trabalhador no posto, pátio + estoque entregue nunca regride")
+
+	main.queue_free()
+	await process_frame
+
+func _test_scene_population_grows_up_to_two_houses() -> void:
+	var main := _boot_main()
+	await process_frame
+	var houses: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE)
+	_check(houses.size() == 2, "a cena coloca duas casas perto da vila")
+	_check(main.buildings.housing_capacity() == Buildings.HOUSE_CAPACITY * 2, "a capacidade bate com o número de casas")
+	# Não é exatamente 0.0: pelo menos um frame de verdade já rodou entre o
+	# _ready() e esta checagem (o `await process_frame` do _boot_main), e
+	# esse frame já chama _process() com o delta real do motor.
+	_check(main.population.count < 1.0, "população praticamente não cresceu ainda logo após instanciar (%.3f)" % main.population.count)
+
+	for _i in 3000:
+		main._process(1.0 / 30.0)
+	_near(main.population.count, float(main.buildings.housing_capacity()), 0.01, "com tempo suficiente, população enche exatamente a capacidade habitacional")
+	_check(main.population.employed() <= main.buildings.housing_capacity(), "nunca emprega mais gente do que a população permite")
 
 	main.queue_free()
 	await process_frame
@@ -1027,7 +1121,9 @@ func _test_scene_worker_arrives_and_produces() -> void:
 func _test_scene_carrier_delivers_to_warehouse() -> void:
 	var main := _boot_main()
 	await process_frame
-	_check(main.carriers.list.size() == 1, "a cena nasce com um carregador")
+	# Fase 6: o carregador também espera a população crescer — não nasce
+	# mais no primeiro frame (ver _test_scene_worker_arrives_and_produces).
+	_check(main.carriers.list.is_empty(), "no primeiro frame ainda não há carregador — também espera população")
 
 	var before := {}
 	for resource in main.buildings.stock:
@@ -1042,6 +1138,7 @@ func _test_scene_carrier_delivers_to_warehouse() -> void:
 			if main.buildings.stock[resource] > before.get(resource, 0.0):
 				delivered = true
 	_check(delivered, "dentro de um teto razoável, o ciclo completo (produzir → coletar → entregar) rende estoque jogável de verdade (%d passos)" % steps)
+	_check(main.carriers.list.size() == 1, "o carregador acabou nascendo assim que sobrou população disponível")
 
 	main.queue_free()
 	await process_frame

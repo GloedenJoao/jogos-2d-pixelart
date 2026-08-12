@@ -24,10 +24,13 @@ func _initialize() -> void:
 
 	await _capture("01_vila_inicial", main)
 
-	# Zoom nos prédios + trabalhadores (Fase 2): centraliza entre eles e avança
-	# a simulação até TODOS os trabalhadores chegarem e começarem a trabalhar
-	# — um único prédio ficar de fora do enquadramento (ou de pé, esperando)
-	# foi exatamente o que confundiu o João da primeira vez.
+	# Zoom nos prédios + trabalhadores: centraliza entre eles e avança a
+	# simulação até a população crescer o bastante pra TODOS os prédios
+	# staffáveis ganharem trabalhador e chegarem a WORKING — um único prédio
+	# ficar de fora do enquadramento (ou de pé, esperando) foi exatamente o
+	# que confundiu o João da primeira vez.
+	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE]
+	var staffable: Array = main.buildings.list.filter(func(b): return not (b.kind in unstaffed_kinds))
 	if not main.buildings.list.is_empty():
 		var mid := Vector2.ZERO
 		for building in main.buildings.list:
@@ -36,7 +39,9 @@ func _initialize() -> void:
 		main.camera.zoom = Vector2(1.1, 1.1)
 		main.camera.position = mid
 		var steps := 0
-		while steps < 3000 and not main.workers.list.all(func(w): return w.state == Worker.State.WORKING):
+		# `Array.all()` num array vazio é vácuo (true) — por isso o tamanho
+		# entra na condição, senão o loop nem chegaria a rodar um passo.
+		while steps < 3000 and (main.workers.list.size() < staffable.size() or not main.workers.list.all(func(w): return w.state == Worker.State.WORKING)):
 			main._process(1.0 / 30.0)
 			steps += 1
 		await process_frame

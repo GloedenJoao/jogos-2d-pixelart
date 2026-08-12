@@ -34,7 +34,7 @@ extends RefCounted
 # oficina longe da vila, por exemplo), este é o lugar a revisitar.
 #
 # Fase 5 acrescenta ENERGIA: o Gerador a Lenha é um prédio sem trabalhador
-# (`_ensure_worker` em main.gd o pula, junto com o Armazém) que queima
+# (o loop de alocação em main.gd `_ready()` o pula, junto com o Armazém) que queima
 # madeira e cobre um RAIO em células — todo prédio de extração/processamento
 # dentro do raio de um gerador com combustível produz mesmo SEM trabalhador
 # alocado. "Energia OU trabalhador", não "e": ter os dois não produz o
@@ -43,8 +43,13 @@ extends RefCounted
 # checagem, um gerador construído perto de prédios já staffados queimaria
 # madeira à toa pra ninguém, e "energia" pareceria puro desperdício em vez
 # de alternativa real ao trabalhador.
+#
+# Fase 6 acrescenta POPULAÇÃO: a Casa não produz nada, só soma capacidade
+# habitacional (`housing_capacity()`). É a `Population` (population.gd) quem
+# lê esse número pra saber até onde a população pode crescer — este arquivo
+# só expõe a capacidade, não decide quem nasce nem quando.
 
-enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR }
+enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR, HOUSE }
 
 const RESOURCE_OF := {
 	Kind.LUMBERJACK: "madeira",
@@ -91,6 +96,11 @@ const GENERATOR_FUEL_RESOURCE := "madeira"
 # prioridade sobre o resto da cadeia.
 const GENERATOR_FUEL_RATE := 0.3
 
+# Pessoas por Casa. Duas casas (o que `main.gd` planta perto da vila) somam
+# 6 — cobre as 4 vagas iniciais (Posto de Lenhador, Pedreira, Serraria,
+# carregador) com folga pra quando houver mais prédio staffável.
+const HOUSE_CAPACITY := 3
+
 class Building:
 	var kind: int
 	var cell: Vector2i
@@ -118,6 +128,13 @@ func warehouse_id() -> int:
 		if list[i].kind == Kind.WAREHOUSE:
 			return i
 	return -1
+
+func housing_capacity() -> int:
+	var total := 0
+	for building in list:
+		if building.kind == Kind.HOUSE:
+			total += HOUSE_CAPACITY
+	return total
 
 # Produz quem está STAFFED (trabalhador de fato WORKING, não só "alocado" —
 # ver o comentário no topo do arquivo) OU POWERED (dentro do raio de um
