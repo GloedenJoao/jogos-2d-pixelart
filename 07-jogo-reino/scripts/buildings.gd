@@ -32,8 +32,19 @@ extends RefCounted
 # a Fase 3 com nomes diferentes. Fica registrado como simplificação
 # consciente, não descuido — se um dia o processamento sair do Armazém (uma
 # oficina longe da vila, por exemplo), este é o lugar a revisitar.
+#
+# Fase 5 acrescenta ENERGIA: o Gerador a Lenha é um prédio sem trabalhador
+# (`_ensure_worker` em main.gd o pula, junto com o Armazém) que queima
+# madeira e cobre um RAIO em células — todo prédio de extração/processamento
+# dentro do raio de um gerador com combustível produz mesmo SEM trabalhador
+# alocado. "Energia OU trabalhador", não "e": ter os dois não produz o
+# dobro, só dá redundância. O gerador só gasta combustível quando existe
+# alguém no raio que de fato precisa dele (`_compute_powered`) — sem essa
+# checagem, um gerador construído perto de prédios já staffados queimaria
+# madeira à toa pra ninguém, e "energia" pareceria puro desperdício em vez
+# de alternativa real ao trabalhador.
 
-enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP }
+enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR }
 
 const RESOURCE_OF := {
 	Kind.LUMBERJACK: "madeira",
@@ -67,11 +78,25 @@ const PROCESS_RECIPES := {
 	Kind.STONE_WORKSHOP: {"input": "pedra", "output": "bloco", "rate": 0.5},
 }
 
+# Alcance do gerador, em células — dá pra cobrir a Serraria/Oficina de
+# Pedra da Fase 4 (nascem 2 células perto da vila) sem alcançar os
+# extratores (Posto de Lenhador/Pedreira, que buscam depósito e podem ficar
+# a dezenas de células de distância) — energia é pensada pro cluster denso
+# perto do Armazém, não pra substituir a busca por depósito.
+const GENERATOR_RADIUS := 5.0
+const GENERATOR_FUEL_RESOURCE := "madeira"
+# Devagar de propósito: mais rápido que a Serraria consome madeira pra
+# tábua (0.6/s) faria o gerador brigar com ela pelo mesmo estoque e nunca
+# sobrar madeira pra processar. Energia é alternativa ao trabalhador, não
+# prioridade sobre o resto da cadeia.
+const GENERATOR_FUEL_RATE := 0.3
+
 class Building:
 	var kind: int
 	var cell: Vector2i
 	var worker_id := -1   # -1 = sem ninguém alocado
 	var buffer := 0.0     # produção acumulada no pátio, esperando um carregador
+	var powered := false  # true no frame em que um gerador o alimentou (leitura pra cena)
 
 	func _init(k: int, c: Vector2i) -> void:
 		kind = k
@@ -94,21 +119,64 @@ func warehouse_id() -> int:
 			return i
 	return -1
 
-# Só extrai/processa pra quem está de fato WORKING agora — ver o comentário
-# no topo do arquivo sobre por que "alocado" não basta.
+# Produz quem está STAFFED (trabalhador de fato WORKING, não só "alocado" —
+# ver o comentário no topo do arquivo) OU POWERED (dentro do raio de um
+# gerador com combustível). Qualquer um dos dois basta.
 func advance(delta: float, map: MapGen, workers: Workers) -> void:
+	var powered := _compute_powered(delta, workers)
 	for building in list:
+		building.powered = powered.has(building)
 		var is_extractor: bool = RESOURCE_OF.has(building.kind)
 		var is_processor: bool = PROCESS_RECIPES.has(building.kind)
-		if (not is_extractor and not is_processor) or building.worker_id == -1:
+		if not is_extractor and not is_processor:
 			continue
-		var w := _worker_by_id(workers, building.worker_id)
-		if w == null or w.state != Worker.State.WORKING:
+		if not _is_staffed(building, workers) and not building.powered:
 			continue
 		if is_extractor:
 			_advance_extractor(building, delta, map)
 		else:
 			_advance_processor(building, delta)
+
+func _is_staffed(building: Building, workers: Workers) -> bool:
+	if building.worker_id == -1:
+		return false
+	var w := _worker_by_id(workers, building.worker_id)
+	return w != null and w.state == Worker.State.WORKING
+
+# Um gerador só acende (e só gasta combustível) se existir pelo menos um
+# prédio no raio que REALMENTE precisa dele agora (sem trabalhador WORKING
+# no momento) — ver o comentário no topo do arquivo sobre por que isso
+# importa. Um prédio já staffado dentro do raio não conta como demanda, mas
+# ainda ganha `powered=true` se o gerador acender por causa de outro vizinho
+# — não tem custo extra em cobrir os dois, só não é ELE quem justifica o
+# gerador queimar madeira.
+func _compute_powered(delta: float, workers: Workers) -> Dictionary:
+	var powered := {}
+	for generator in list:
+		if generator.kind != Kind.GENERATOR:
+			continue
+		var in_range: Array = []
+		var needs_power := false
+		for building in list:
+			if building == generator:
+				continue
+			if not (RESOURCE_OF.has(building.kind) or PROCESS_RECIPES.has(building.kind)):
+				continue
+			if Vector2(building.cell).distance_to(Vector2(generator.cell)) > GENERATOR_RADIUS:
+				continue
+			in_range.append(building)
+			if not _is_staffed(building, workers):
+				needs_power = true
+		if not needs_power:
+			continue
+		var available: float = stock.get(GENERATOR_FUEL_RESOURCE, 0.0)
+		var used: float = minf(GENERATOR_FUEL_RATE * delta, available)
+		if used <= 0.0:
+			continue
+		stock[GENERATOR_FUEL_RESOURCE] = available - used
+		for building in in_range:
+			powered[building] = true
+	return powered
 
 # O teto do pátio (`EXTRACTOR_BUFFER_CAP`) throttla a extração: sem espaço no
 # pátio, o trabalhador continua WORKING mas nada sai do depósito — não é

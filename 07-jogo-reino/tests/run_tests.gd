@@ -76,6 +76,13 @@ func _initialize() -> void:
 	_test_buildings_processor_conversion_is_1_to_1()
 	_test_buildings_processor_throttled_by_available_input()
 
+	_test_buildings_powered_without_worker_still_produces()
+	_test_buildings_staffed_without_any_generator_still_produces()
+	_test_buildings_neither_staffed_nor_powered_does_not_produce()
+	_test_buildings_generator_out_of_range_does_not_power()
+	_test_buildings_generator_only_burns_fuel_when_something_needs_it()
+	_test_buildings_generator_runs_out_of_fuel_stops_powering()
+
 	_test_carrier_picks_the_fullest_buffer()
 	_test_carrier_full_round_trip_delivers_to_warehouse()
 	_test_carrier_ignores_buffers_below_min_pickup()
@@ -720,6 +727,94 @@ func _test_buildings_processor_throttled_by_available_input() -> void:
 	b.advance(5.0, MapGen.new(), mgr)
 	_near(b.stock["tábua"], tabua_before, 0.0001, "sem mais insumo, Serraria para sozinha (trabalhador continua WORKING)")
 
+# ---- Fase 5: energia (Gerador a Lenha, regra "energia OU trabalhador") ----
+
+func _test_buildings_powered_without_worker_still_produces() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.GENERATOR, Vector2i(4, 4))
+	var id := b.place(Buildings.Kind.STONE_WORKSHOP, Vector2i(5, 4))   # dentro do raio, sem trabalhador
+	b.stock["pedra"] = 10.0
+	b.stock["madeira"] = 10.0   # combustível do gerador
+	var mgr := Workers.new()
+
+	_check(b.list[id].worker_id == -1, "a Oficina de Pedra deste teste não tem NENHUM trabalhador")
+	b.advance(1.0, MapGen.new(), mgr)
+	_check(b.stock["bloco"] > 0.0, "mesmo sem trabalhador, produz só por estar no raio de um gerador com combustível")
+	_check(b.list[id].powered, "Building.powered fica true no frame em que foi alimentado (pra cena desenhar o indicador)")
+
+func _test_buildings_staffed_without_any_generator_still_produces() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.SAWMILL, Vector2i(4, 4))   # nenhum gerador no mapa
+	b.stock["madeira"] = 10.0
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(id, w)
+	w.state = Worker.State.WORKING
+
+	b.advance(1.0, MapGen.new(), mgr)
+	_check(b.stock["tábua"] > 0.0, "trabalhador sozinho continua bastando — energia é alternativa, não substituição")
+	_check(not b.list[id].powered, "não tem gerador nenhum, então powered nunca vira true")
+
+func _test_buildings_neither_staffed_nor_powered_does_not_produce() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.SAWMILL, Vector2i(4, 4))
+	b.stock["madeira"] = 10.0
+	var mgr := Workers.new()
+
+	b.advance(1.0, MapGen.new(), mgr)
+	_near(b.stock["tábua"], 0.0, 0.0001, "sem trabalhador WORKING e sem gerador no raio, não produz nada")
+	_check(not b.list[id].powered, "sem gerador nenhum, powered fica false")
+
+func _test_buildings_generator_out_of_range_does_not_power() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.GENERATOR, Vector2i(0, 0))
+	var id := b.place(Buildings.Kind.STONE_WORKSHOP, Vector2i(0, int(Buildings.GENERATOR_RADIUS) + 5))
+	b.stock["pedra"] = 10.0
+	b.stock["madeira"] = 10.0
+	var mgr := Workers.new()
+
+	b.advance(1.0, MapGen.new(), mgr)
+	_near(b.stock["bloco"], 0.0, 0.0001, "prédio fora do raio do gerador não recebe energia")
+	_check(not b.list[id].powered, "fora do raio: powered continua false")
+	_near(b.stock["madeira"], 10.0, 0.0001, "gerador não gasta combustível por um prédio que nem alcança")
+
+func _test_buildings_generator_only_burns_fuel_when_something_needs_it() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.GENERATOR, Vector2i(4, 4))
+	var id := b.place(Buildings.Kind.SAWMILL, Vector2i(5, 4))   # dentro do raio, mas JÁ staffado
+	b.stock["madeira"] = 10.0
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	b.assign(id, w)
+	w.state = Worker.State.WORKING
+
+	var madeira_before: float = b.stock["madeira"]
+	b.advance(1.0, MapGen.new(), mgr)
+	_check(b.stock["madeira"] < madeira_before, "a Serraria consumiu madeira normalmente (produção por trabalhador)")
+	# a diferença entre o que a Serraria consumiu (rate da receita) e o que
+	# sobrou tem que bater — se o gerador também tivesse queimado combustível
+	# à toa, sobraria menos madeira do que a receita sozinha explica.
+	var recipe: Dictionary = Buildings.PROCESS_RECIPES[Buildings.Kind.SAWMILL]
+	_near(b.stock["madeira"], madeira_before - recipe["rate"], 0.001, "gerador não queima combustível: ninguém no raio precisava dele (Serraria já staffada)")
+
+func _test_buildings_generator_runs_out_of_fuel_stops_powering() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.GENERATOR, Vector2i(4, 4))
+	var id := b.place(Buildings.Kind.STONE_WORKSHOP, Vector2i(5, 4))
+	b.stock["pedra"] = 100.0
+	b.stock["madeira"] = 0.5   # pouco combustível, esgota rápido
+	var mgr := Workers.new()
+
+	for _i in 20:
+		b.advance(0.1, MapGen.new(), mgr)
+	_near(b.stock["madeira"], 0.0, 0.001, "combustível esgota")
+	var bloco_when_out_of_fuel: float = b.stock["bloco"]
+	_check(bloco_when_out_of_fuel > 0.0, "produziu bloco enquanto teve combustível (o teste não é vácuo)")
+
+	b.advance(1.0, MapGen.new(), mgr)
+	_near(b.stock["bloco"], bloco_when_out_of_fuel, 0.0001, "sem combustível, o gerador para de alimentar — Oficina de Pedra para junto")
+	_check(not b.list[id].powered, "powered vira false assim que o gerador fica sem combustível")
+
 # ---- Fase 3: carregador (carrier.gd / carriers.gd) ----
 
 func _open_pathfinder(cols: int = 20, rows: int = 20, cell: float = 32.0) -> Pathfinder:
@@ -889,11 +984,21 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	var main := _boot_main()
 	await process_frame
 	_check(main.buildings.warehouse_id() >= 0, "a cena sempre nasce com um Armazém (é a própria vila)")
-	var extractors: Array = main.buildings.list.filter(func(b): return b.kind != Buildings.Kind.WAREHOUSE)
-	_check(extractors.size() >= 1, "a cena consegue colocar pelo menos um extrator perto da vila")
-	_check(main.workers.list.size() == extractors.size(), "um trabalhador nasce por extrator — o Armazém não tem staff")
-	for building in extractors:
-		_check(building.worker_id != -1, "todo extrator já nasce com trabalhador alocado, nenhum fica sem gente")
+
+	# Nem todo prédio de produção tem trabalhador nesta cena de propósito: o
+	# Armazém e o Gerador são infraestrutura passiva, e a Oficina de Pedra
+	# nasce sem trabalhador nenhum pra provar "energia OU trabalhador" (ver
+	# o comentário em main.gd _ready()).
+	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP]
+	var staffable: Array = main.buildings.list.filter(func(b): return not (b.kind in unstaffed_kinds))
+	_check(staffable.size() >= 1, "a cena consegue colocar pelo menos um prédio com trabalhador")
+	_check(main.workers.list.size() == staffable.size(), "um trabalhador por prédio staffável, nenhum fica sem gente")
+	for building in staffable:
+		_check(building.worker_id != -1, "todo prédio staffável já nasce com trabalhador alocado")
+
+	var workshop_matches: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
+	if workshop_matches.size() > 0:
+		_check(workshop_matches[0].worker_id == -1, "a Oficina de Pedra nasce sem trabalhador — energia é quem sustenta ela")
 
 	var steps := 0
 	while steps < 3000 and not main.workers.list.all(func(w): return w.state == Worker.State.WORKING):
@@ -902,13 +1007,14 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	for w in main.workers.list:
 		_check(w.state == Worker.State.WORKING, "todo trabalhador chega e começa a trabalhar dentro de um teto razoável")
 
+	var extractors: Array = staffable.filter(func(b): return Buildings.RESOURCE_OF.has(b.kind))
 	var before := {}
 	for building in extractors:
 		before[building.cell] = building.buffer
 	for _i in 60:
 		main._process(1.0 / 30.0)
 	for building in extractors:
-		_check(building.buffer >= before[building.cell], "com trabalhador no posto, o pátio do prédio não fica pra trás (>=, o carregador pode já ter passado)")
+		_check(building.buffer >= before[building.cell], "com trabalhador no posto, o pátio do extrator não fica pra trás (>=, o carregador pode já ter passado)")
 
 	main.queue_free()
 	await process_frame
@@ -949,17 +1055,21 @@ func _test_scene_processing_chain_produces_tabua_and_bloco() -> void:
 	var sawmill: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.SAWMILL)
 	var workshop: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
 	_check(sawmill.size() == 1 and workshop.size() == 1, "a cena coloca Serraria e Oficina de Pedra")
+	_check(workshop[0].worker_id == -1, "a Oficina de Pedra continua sem trabalhador durante todo o teste")
 
 	var steps := 0
 	var got_tabua := false
 	var got_bloco := false
+	var was_powered := false
 	while steps < 10000 and not (got_tabua and got_bloco):
 		main._process(1.0 / 30.0)
 		steps += 1
 		got_tabua = main.buildings.stock.get("tábua", 0.0) > 0.0
 		got_bloco = main.buildings.stock.get("bloco", 0.0) > 0.0
+		was_powered = was_powered or workshop[0].powered
 	_check(got_tabua, "a cadeia inteira rende tábua de verdade dentro de um teto razoável (%d passos)" % steps)
 	_check(got_bloco, "a cadeia inteira rende bloco de verdade dentro de um teto razoável (%d passos)" % steps)
+	_check(was_powered, "o bloco só saiu porque o Gerador alimentou a Oficina de Pedra em algum momento (sem trabalhador nenhum)")
 
 	main.queue_free()
 	await process_frame
