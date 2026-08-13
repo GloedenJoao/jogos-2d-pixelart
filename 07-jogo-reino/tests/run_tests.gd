@@ -109,7 +109,7 @@ func _initialize() -> void:
 	await _test_scene_click_reveals_fog()
 	await _test_scene_pan_moves_camera_within_limits()
 	await _test_scene_worker_arrives_and_produces()
-	await _test_scene_population_grows_up_to_two_houses()
+	await _test_scene_population_grows_up_to_three_houses()
 	await _test_scene_progression_grows_reveal_radius()
 	await _test_scene_carrier_delivers_to_warehouse()
 	await _test_scene_processing_chain_produces_tabua_and_bloco()
@@ -898,25 +898,28 @@ func _test_population_starts_at_zero() -> void:
 
 func _test_population_grows_toward_capacity_and_caps() -> void:
 	var p := Population.new()
-	p.advance(1.0, 6)
+	# food_available bem grande: estes testes cobrem só o crescimento,
+	# comida à vontade não deixa a fome interferir (ver testes dedicados
+	# a comida/fome mais abaixo).
+	p.advance(1.0, 6, 999999.0)
 	_near(p.count, Population.GROWTH_PER_SECOND, 0.0001, "cresce à taxa esperada")
 
 	# delta gigante não pode passar do teto — sem casa nova, população não
 	# nasce do nada além da capacidade habitacional.
-	p.advance(1000.0, 6)
+	p.advance(1000.0, 6, 999999.0)
 	_near(p.count, 6.0, 0.0001, "cresce até o teto e para exatamente nele")
 
-	p.advance(10.0, 6)
+	p.advance(10.0, 6, 999999.0)
 	_near(p.count, 6.0, 0.0001, "não ultrapassa o teto mesmo com mais tempo")
 
 func _test_population_does_not_grow_without_housing() -> void:
 	var p := Population.new()
-	p.advance(10.0, 0)
+	p.advance(10.0, 0, 999999.0)
 	_near(p.count, 0.0, 0.0001, "capacidade zero (nenhuma casa) significa população nunca cresce")
 
 func _test_population_employ_respects_availability() -> void:
 	var p := Population.new()
-	p.advance(10.0, 3)   # população cheia em 3
+	p.advance(10.0, 3, 999999.0)   # população cheia em 3
 
 	_check(p.employ(), "primeiro emprego disponível é aceito")
 	_check(p.employ(), "segundo também")
@@ -928,8 +931,66 @@ func _test_population_employ_respects_availability() -> void:
 func _test_population_available_grows_as_count_grows() -> void:
 	var p := Population.new()
 	_check(p.available() == 0, "nada disponível em t=0")
-	p.advance(1.0 / Population.GROWTH_PER_SECOND, 10)   # ~1.0 de população
+	p.advance(1.0 / Population.GROWTH_PER_SECOND, 10, 999999.0)   # ~1.0 de população
 	_check(p.available() >= 1, "depois de crescer o suficiente, sobra gente disponível pra empregar")
+
+# ---- Necessidade de comida (Fazenda + Population) ----
+
+func _test_population_advance_returns_food_consumed() -> void:
+	var p := Population.new()
+	p.advance(100.0, 10, 999999.0)   # população cheia em 10, comida à vontade
+	var before: float = p.count
+	var consumed := p.advance(1.0, 10, 999999.0)
+	_near(consumed, before * Population.CONSUMPTION_PER_CAPITA, 0.0001, "consumo bate com população × consumo per capita")
+	_check(consumed > 0.0, "consumiu de verdade (teste não é vácuo)")
+
+func _test_population_well_fed_does_not_starve() -> void:
+	var p := Population.new()
+	for _i in 200:
+		p.advance(1.0, 6, 999999.0)   # sempre mais comida do que precisa
+	_near(p.count, 6.0, 0.01, "com comida sempre disponível, população fica na capacidade cheia, sem encolher")
+
+func _test_population_starves_without_food() -> void:
+	var p := Population.new()
+	p.advance(100.0, 6, 999999.0)   # sobe até 6 primeiro, com comida à vontade
+	_near(p.count, 6.0, 0.01, "população cheia antes de cortar a comida")
+
+	for _i in 50:
+		p.advance(1.0, 6, 0.0)   # zero comida disponível a partir daqui
+	_check(p.count < 6.0, "sem comida nenhuma, a fome encolhe a população mesmo com capacidade sobrando")
+	_check(p.count >= 0.0, "população nunca fica negativa")
+
+func _test_population_partial_food_finds_equilibrium() -> void:
+	var p := Population.new()
+	p.advance(100.0, 6, 999999.0)
+	# Comida suficiente pra sustentar só metade da capacidade — o
+	# crescimento continua tentando subir até 6, mas a fome puxa de volta;
+	# o resultado de longo prazo se estabiliza numa faixa, não explode nem
+	# some.
+	var half_ration: float = 3.0 * Population.CONSUMPTION_PER_CAPITA
+	for _i in 2000:
+		p.advance(1.0, 6, half_ration)
+	_check(p.count > 0.0 and p.count < 6.0, "com comida parcial, população se estabiliza abaixo da capacidade cheia (%.2f)" % p.count)
+
+func _test_buildings_farm_produces_without_a_deposit() -> void:
+	var b := Buildings.new()
+	var id := b.place(Buildings.Kind.FARM, Vector2i(4, 4))
+	var mgr := Workers.new()
+	var w := mgr.spawn(Vector2.ZERO)
+	var m := MapGen.new()
+	m.generate(5, 5, 1)   # mapa mínimo: a Fazenda não deveria nem tocar nele
+
+	b.advance(1.0, m, mgr)
+	_near(b.list[id].buffer, 0.0, 0.0001, "sem trabalhador alocado, Fazenda não acumula nada")
+
+	b.assign(id, w)
+	w.state = Worker.State.WORKING
+	b.advance(1.0, m, mgr)
+	_check(b.list[id].buffer > 0.0, "trabalhador WORKING na Fazenda produz comida sem depender de nenhum depósito do mapa")
+
+	var taken := b.collect(id, 999.0)
+	b.deliver("comida", taken)
+	_check(b.stock["comida"] > 0.0, "comida coletada do pátio vira estoque jogável (mesmo caminho collect/deliver dos outros extratores)")
 
 # ---- Fase 7: progressão (progression.gd) ----
 
@@ -1157,8 +1218,13 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	# `Array.all()` num array vazio devolve true (vácuo) — por isso o
 	# tamanho entra na condição também, senão o loop sairia no passo 0 antes
 	# de qualquer trabalhador sequer nascer.
+	#
+	# Teto de passos maior que antes da Fazenda existir: com 6 prédios
+	# staffáveis + carregador (7 vagas), a população precisa passar do piso
+	# de arranque (comida chegando de verdade) antes de terminar de
+	# preencher a fila toda — ver o comentário em main.gd _ready().
 	var steps := 0
-	while steps < 3000 and (main.workers.list.size() < staffable.size() or not main.workers.list.all(func(w): return w.state == Worker.State.WORKING)):
+	while steps < 6000 and (main.workers.list.size() < staffable.size() or not main.workers.list.all(func(w): return w.state == Worker.State.WORKING)):
 		main._process(1.0 / 30.0)
 		steps += 1
 	_check(main.workers.list.size() == staffable.size(), "com tempo suficiente, todo prédio staffável acaba ganhando um trabalhador (%d passos)" % steps)
@@ -1187,18 +1253,27 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	main.queue_free()
 	await process_frame
 
-func _test_scene_population_grows_up_to_two_houses() -> void:
+func _test_scene_population_grows_up_to_three_houses() -> void:
 	var main := _boot_main()
 	await process_frame
 	var houses: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE)
-	_check(houses.size() == 2, "a cena coloca duas casas perto da vila")
-	_check(main.buildings.housing_capacity() == Buildings.HOUSE_CAPACITY * 2, "a capacidade bate com o número de casas")
+	# Três casas, não duas: a Fazenda é o sexto prédio staffável, e junto com
+	# o carregador soma 7 vagas — duas casas (capacidade 6) já não cobririam
+	# nem as vagas, quanto mais deixar folga (ver o comentário em
+	# _place_starting_buildings).
+	_check(houses.size() == 3, "a cena coloca três casas perto da vila")
+	_check(main.buildings.housing_capacity() == Buildings.HOUSE_CAPACITY * 3, "a capacidade bate com o número de casas")
 	# Não é exatamente 0.0: pelo menos um frame de verdade já rodou entre o
 	# _ready() e esta checagem (o `await process_frame` do _boot_main), e
 	# esse frame já chama _process() com o delta real do motor.
 	_check(main.population.count < 1.0, "população praticamente não cresceu ainda logo após instanciar (%.3f)" % main.population.count)
 
-	for _i in 3000:
+	# Teto de passos maior que a Fase 6 original: agora crescer além do piso
+	# de arranque (`Population.BOOTSTRAP_POPULATION`) depende da Fazenda
+	# produzir, do carregador entregar no Armazém, e só DEPOIS disso a
+	# população volta a crescer de verdade — mais uma etapa na cadeia do que
+	# antes da comida existir.
+	for _i in 6000:
 		main._process(1.0 / 30.0)
 	_near(main.population.count, float(main.buildings.housing_capacity()), 0.01, "com tempo suficiente, população enche exatamente a capacidade habitacional")
 	_check(main.population.employed() <= main.buildings.housing_capacity(), "nunca emprega mais gente do que a população permite")
