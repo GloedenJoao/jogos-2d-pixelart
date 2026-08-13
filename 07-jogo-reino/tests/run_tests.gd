@@ -86,6 +86,9 @@ func _initialize() -> void:
 	_test_buildings_generator_only_burns_fuel_when_something_needs_it()
 	_test_buildings_generator_runs_out_of_fuel_stops_powering()
 
+	_test_buildings_waterwheel_powers_without_burning_any_stock()
+	_test_buildings_windmill_powers_without_burning_any_stock()
+
 	_test_buildings_housing_capacity()
 	_test_population_starts_at_zero()
 	_test_population_grows_toward_capacity_and_caps()
@@ -115,6 +118,7 @@ func _initialize() -> void:
 	await _test_scene_carrier_delivers_to_warehouse()
 	await _test_scene_processing_chain_produces_tabua_and_bloco()
 	await _test_scene_ore_chain_produces_lingote()
+	await _test_scene_waterwheel_and_windmill_placement()
 
 	print("")
 	if _fail == 0:
@@ -880,6 +884,40 @@ func _test_buildings_generator_runs_out_of_fuel_stops_powering() -> void:
 	_near(b.stock["bloco"], bloco_when_out_of_fuel, 0.0001, "sem combustível, o gerador para de alimentar — Oficina de Pedra para junto")
 	_check(not b.list[id].powered, "powered vira false assim que o gerador fica sem combustível")
 
+# ---- Roda D'Água + Moinho de Vento (segunda e terceira fonte de energia, grátis pra operar) ----
+
+func _test_buildings_waterwheel_powers_without_burning_any_stock() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.WATERWHEEL, Vector2i(4, 4))
+	var id := b.place(Buildings.Kind.STONE_WORKSHOP, Vector2i(5, 4))
+	b.stock["pedra"] = 10.0
+	var mgr := Workers.new()
+
+	var stock_before := b.stock.duplicate()
+	b.advance(1.0, MapGen.new(), mgr)
+	_check(b.stock["bloco"] > 0.0, "Roda D'Água sustenta produção sem trabalhador, igual ao Gerador")
+	_check(b.list[id].powered, "powered fica true — mesmo sinal que a cena usa pro indicador, não importa qual fonte")
+	for resource in stock_before:
+		if resource == "pedra" or resource == "bloco":
+			continue
+		_near(b.stock.get(resource, 0.0), stock_before[resource], 0.0001, "Roda D'Água não consome NENHUM estoque — é grátis pra operar, diferente do Gerador")
+
+func _test_buildings_windmill_powers_without_burning_any_stock() -> void:
+	var b := Buildings.new()
+	b.place(Buildings.Kind.WINDMILL, Vector2i(4, 4))
+	var id := b.place(Buildings.Kind.SAWMILL, Vector2i(5, 4))
+	b.stock["madeira"] = 10.0
+	var mgr := Workers.new()
+
+	var madeira_before: float = b.stock["madeira"]
+	b.advance(1.0, MapGen.new(), mgr)
+	_check(b.stock["tábua"] > 0.0, "Moinho de Vento sustenta produção sem trabalhador, igual ao Gerador")
+	_check(b.list[id].powered, "powered fica true")
+	# madeira caiu só pelo consumo da RECEITA da Serraria (input da produção),
+	# nunca por combustível — Moinho não tem `FUELED_POWER_KINDS`.
+	var recipe: Dictionary = Buildings.PROCESS_RECIPES[Buildings.Kind.SAWMILL]
+	_near(b.stock["madeira"], madeira_before - recipe["rate"], 0.001, "Moinho de Vento não queima madeira nenhuma — só a receita da Serraria consumiu")
+
 # ---- Fase 6: população (population.gd, Buildings.housing_capacity) ----
 
 func _test_buildings_housing_capacity() -> void:
@@ -1236,6 +1274,14 @@ func _test_scene_buildings_unlock_progressively() -> void:
 	var s4 := _advance_to_tier(main, 4, 40000)
 	var kinds4: Array = main.buildings.list.map(func(b): return b.kind)
 	_check(Buildings.Kind.STONE_WORKSHOP in kinds4 and Buildings.Kind.GENERATOR in kinds4 and Buildings.Kind.FORGE in kinds4, "tier 4 acrescenta Oficina de Pedra, Gerador e Forja (%d passos)" % s4)
+	_check(not (Buildings.Kind.WATERWHEEL in kinds4) and not (Buildings.Kind.WINDMILL in kinds4), "Roda D'Água e Moinho de Vento continuam fora até o tier 5 (o último)")
+
+	# Roda D'Água/Moinho de Vento só nascem se existir célula válida perto
+	# da vila (água de verdade ao lado / terreno alto o bastante) — mesma
+	# regra de "explore mais" dos extratores de depósito, então não são uma
+	# garantia como os prédios anteriores.
+	var s5 := _advance_to_tier(main, 5, 40000)
+	_check(main._unlocked_level >= 5, "sobe pro tier 5 (o último) dentro de um teto razoável (%d passos)" % s5)
 
 	# Depois do último tier, subir de nível continua acontecendo (o alcance
 	# de exploração ainda cresce, ver progression.gd), mas nenhum prédio
@@ -1244,7 +1290,7 @@ func _test_scene_buildings_unlock_progressively() -> void:
 	var buildings_before: int = main.buildings.list.size()
 	for _i in 6000:
 		main._process(1.0 / 30.0)
-	_check(main.buildings.list.size() == buildings_before, "depois do tier 4, subir de nível não planta prédio novo nenhum (%d prédios antes e depois)" % buildings_before)
+	_check(main.buildings.list.size() == buildings_before, "depois do tier 5, subir de nível não planta prédio novo nenhum (%d prédios antes e depois)" % buildings_before)
 
 	main.queue_free()
 	await process_frame
@@ -1258,7 +1304,7 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	# Armazém, o Gerador e as Casas são infraestrutura passiva, e a Oficina
 	# de Pedra nasce sem trabalhador nenhum pra provar "energia OU
 	# trabalhador" (ver o comentário em main.gd _ready()).
-	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE]
+	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE, Buildings.Kind.WATERWHEEL, Buildings.Kind.WINDMILL]
 
 	# Fase 6: mão de obra não é mais instantânea — a população começa em
 	# zero, então no primeiro frame ninguém tem trabalhador ainda nenhum. No
@@ -1454,6 +1500,31 @@ func _test_scene_ore_chain_produces_lingote() -> void:
 		steps += 1
 		got_lingote = main.buildings.stock.get("lingote", 0.0) > 0.0
 	_check(got_lingote, "a cadeia minério → lingote rende resultado de verdade dentro de um teto razoável (%d passos)" % steps)
+
+	main.queue_free()
+	await process_frame
+
+# Roda D'Água e Moinho de Vento na cena de verdade (tier 5, o último):
+# confirma que `_cell_near_water`/`_cell_on_high_ground` acham célula válida
+# na semente real do jogo — medido à parte (fora deste arquivo) que existe
+# água e terreno alto dentro do raio de busca a partir da vila, então isto
+# não é sorte. O mecanismo de "energia sem combustível" em si já está
+# provado isolado em `_test_buildings_waterwheel_powers_without_burning_any_stock`
+# e `_test_buildings_windmill_powers_without_burning_any_stock` — aqui
+# checar `building.powered` não distinguiria QUAL fonte alimentou (Gerador
+# também pode estar no raio do mesmo prédio), então não tentamos.
+func _test_scene_waterwheel_and_windmill_placement() -> void:
+	var main := _boot_main()
+	await process_frame
+	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
+	var waterwheel: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.WATERWHEEL)
+	var windmill: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.WINDMILL)
+	_check(waterwheel.size() == 1, "a semente real do jogo tem água perto o bastante da vila pra Roda D'Água nascer (%d passos até o último tier)" % unlock_steps)
+	_check(windmill.size() == 1, "a semente real do jogo tem terreno alto o bastante perto da vila pro Moinho de Vento nascer")
+	if waterwheel.size() == 1:
+		_check(main._has_adjacent_water(waterwheel[0].cell), "a célula onde a Roda D'Água nasceu realmente tem água de verdade do lado")
+	if windmill.size() == 1:
+		_check(main.map.height_at(windmill[0].cell.x, windmill[0].cell.y) >= main.WINDMILL_MIN_HEIGHT, "a célula onde o Moinho nasceu realmente está no limiar de altura exigido")
 
 	main.queue_free()
 	await process_frame
