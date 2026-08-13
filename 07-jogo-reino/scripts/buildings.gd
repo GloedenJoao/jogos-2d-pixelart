@@ -56,13 +56,23 @@ extends RefCounted
 # `DEPOSIT_KIND_OF`) e Forja é só mais uma receita (`PROCESS_RECIPES`), a
 # mesma arquitetura de Posto de Lenhador/Pedreira e Serraria/Oficina de
 # Pedra reaproveitada sem mudar uma linha da lógica de `advance()`.
+#
+# Fazenda: primeiro produtor SEM depósito finito. `RESOURCE_OF` tem entrada
+# ("comida"), mas `DEPOSIT_KIND_OF` de propósito NÃO tem — não existe tile de
+# "terra fértil" no MapGen, e a Fazenda representa lavoura ao redor da vila
+# em vez de puxar de uma célula específica. `_advance_extractor` usa isso
+# como a distinção: com entrada em `DEPOSIT_KIND_OF`, extrai de
+# `map.extract()` (finito); sem entrada, produz direto pro pátio (fonte
+# renovável, só limitada pelo teto do pátio, igual às outras — ainda precisa
+# de `Carrier` pra virar estoque jogável, não é atalho).
 
-enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR, HOUSE, MINE, FORGE }
+enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR, HOUSE, MINE, FORGE, FARM }
 
 const RESOURCE_OF := {
 	Kind.LUMBERJACK: "madeira",
 	Kind.QUARRY: "pedra",
 	Kind.MINE: "minério",
+	Kind.FARM: "comida",
 }
 const DEPOSIT_KIND_OF := {
 	Kind.LUMBERJACK: MapGen.Kind.FOREST,
@@ -74,10 +84,15 @@ const DEPOSIT_KIND_OF := {
 # contínuo, não segundos nem horas. Minério é o mais lento dos três: colina
 # fica mais longe da vila (Fase 1: só nasce acima de uma altura mínima), e o
 # plano do projeto já descreve minério como o recurso mais raro/valioso.
+# Comida calibrada contra `Population.CONSUMPTION_PER_CAPITA` (ver
+# population.gd) — uma Fazenda staffada sozinha sustenta a população cheia
+# das duas Casas iniciais com folga, sem sobrar tanto que a necessidade vire
+# decoração (ver tests/calibrate_farm.gd, removido depois de medir).
 const PRODUCTION_PER_SECOND := {
 	Kind.LUMBERJACK: 1.0,
 	Kind.QUARRY: 0.8,
 	Kind.MINE: 0.6,
+	Kind.FARM: 0.7,
 }
 # Quanto cabe no pátio antes de precisar de um carregador. Baixo o bastante
 # pra um único carregador conseguir dar conta de dois extratores sem deixar
@@ -130,6 +145,7 @@ var list: Array[Building] = []
 var stock: Dictionary = {
 	"madeira": 0.0, "pedra": 0.0, "minério": 0.0,
 	"tábua": 0.0, "bloco": 0.0, "lingote": 0.0,
+	"comida": 0.0,
 }
 
 func place(kind: int, cell: Vector2i) -> int:
@@ -215,12 +231,22 @@ func _compute_powered(delta: float, workers: Workers) -> Dictionary:
 # O teto do pátio (`EXTRACTOR_BUFFER_CAP`) throttla a extração: sem espaço no
 # pátio, o trabalhador continua WORKING mas nada sai do depósito — não é
 # desperdiçado, só espera.
+#
+# Prédios com entrada em `DEPOSIT_KIND_OF` puxam de uma célula finita do
+# MapGen (Posto de Lenhador, Pedreira, Mina). A Fazenda não tem entrada ali
+# de propósito — é fonte renovável (lavoura ao redor da vila, sem tile
+# próprio no mapa), então produz direto pro pátio sem consultar `map` nenhum,
+# só limitada pelo teto do pátio como qualquer outra.
 func _advance_extractor(building: Building, delta: float, map: MapGen) -> void:
 	var room: float = EXTRACTOR_BUFFER_CAP - building.buffer
 	if room <= 0.0:
 		return
 	var rate: float = PRODUCTION_PER_SECOND[building.kind]
-	var extracted: float = map.extract(building.cell.x, building.cell.y, minf(rate * delta, room))
+	var amount: float = minf(rate * delta, room)
+	if not DEPOSIT_KIND_OF.has(building.kind):
+		building.buffer += amount
+		return
+	var extracted: float = map.extract(building.cell.x, building.cell.y, amount)
 	building.buffer += extracted
 
 # Throttlado pelo estoque de insumo disponível — sem madeira no Armazém, a

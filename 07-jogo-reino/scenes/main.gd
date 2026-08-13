@@ -126,6 +126,12 @@ const C_BUILDING := {
 	# cima de chão quente).
 	Buildings.Kind.MINE: Color("4a4a5c"),
 	Buildings.Kind.FORGE: Color("d9622c"),
+	# Fazenda nasce em grama (mesmo chão verde da Serraria/Oficina de Pedra
+	# vizinhas) — um marcador verde ali repetiria a mesma camuflagem da
+	# Pedreira na Fase 2, e um dourado ficaria perto demais do amarelo da
+	# Serraria (d1a63e). Framboesa contrasta com o verde do chão E com todo
+	# o resto da paleta de prédios já em uso.
+	Buildings.Kind.FARM: Color("c9518f"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
@@ -137,6 +143,7 @@ const C_BUILDING_ROOF := {
 	Buildings.Kind.HOUSE: Color("41597a"),
 	Buildings.Kind.MINE: Color("2e2e3a"),
 	Buildings.Kind.FORGE: Color("8a3d16"),
+	Buildings.Kind.FARM: Color("7a2f52"),
 }
 const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
@@ -154,6 +161,7 @@ const C_CARGO := {
 	"madeira": Color("b98a4e"),
 	"pedra": Color("a8a8b4"),
 	"minério": Color("8a7fa0"),
+	"comida": Color("c9518f"),
 }
 
 var map := MapGen.new()
@@ -166,9 +174,9 @@ var carriers := Carriers.new()
 var population := Population.new()
 var progression := Progression.new()
 var _last_total_stock := 0.0
+var _is_starving := false   # lido pelo HUD — true no frame em que a comida disponível não cobriu o consumo
 var _village_cell: Vector2i
-var _pending_jobs: Array = []   # ids de Buildings.list esperando trabalhador
-var _carrier_pending := false
+var _pending_jobs: Array = []   # ids de Buildings.list esperando trabalhador, -1 = sentinela do carregador
 var camera: Camera2D
 var _fog_layer: Node2D
 var _water_layer: Node2D
@@ -222,14 +230,35 @@ func _ready() -> void:
 	# cresce (`Population`) até a capacidade das Casas. Sem isso, mão de obra
 	# continuaria sendo infinita e instantânea, e Casa não teria propósito
 	# nenhum no jogo.
+	#
+	# Fazenda e carregador (sentinela -1, ver `_fill_jobs`) vêm PRIMEIRO na
+	# fila, à frente de todo o resto — não é só gosto de ordenação:
+	# `Population.BOOTSTRAP_POPULATION` (2) é exatamente gente o bastante pra
+	# cobrir os dois, e são os dois que fecham o ciclo "produzir comida →
+	# virar estoque de verdade" que desbloqueia crescimento além do piso de
+	# arranque (ver population.gd). Se Posto de Lenhador/Pedreira/etc.
+	# entrassem antes, os dois trabalhadores de graça do piso iriam pra lá, a
+	# Fazenda nunca ganharia gente, e a vila travaria em 2 de população pra
+	# sempre — foi exatamente o que a suíte de testes pegou na primeira
+	# versão desta mudança.
+	var farm_id := -1
 	for i in buildings.list.size():
+		if buildings.list[i].kind == Buildings.Kind.FARM:
+			farm_id = i
+			break
+	if farm_id >= 0:
+		_pending_jobs.append(farm_id)
+	_pending_jobs.append(-1)   # sentinela: carregador
+
+	for i in buildings.list.size():
+		if i == farm_id:
+			continue
 		var building := buildings.list[i]
 		if building.kind == Buildings.Kind.WAREHOUSE or building.kind == Buildings.Kind.GENERATOR:
 			continue
 		if building.kind == Buildings.Kind.HOUSE or building.kind == Buildings.Kind.STONE_WORKSHOP:
 			continue
 		_pending_jobs.append(i)
-	_carrier_pending = true
 
 	_vision_sources.append(Vector3(_village_cell.x, _village_cell.y, progression.reveal_radius()))
 	fog.update_visibility(_vision_sources)
@@ -237,26 +266,26 @@ func _ready() -> void:
 
 	camera.position = Vector2(_village_cell) * CELL
 
-# Preenche vagas (prédio esperando trabalhador, ou o carregador) uma a uma,
-# só enquanto a população tiver gente disponível (`Population.available()`).
-# Ordem da fila = prioridade: extratores antes da Serraria (que depende da
-# produção deles chegar no Armazém primeiro), carregador por último (não
-# adianta ter alguém pra transportar antes de existir o que transportar).
+# Preenche vagas (prédio esperando trabalhador, ou o carregador — sentinela
+# -1) uma a uma, só enquanto a população tiver gente disponível
+# (`Population.available()`). Ordem da fila = prioridade: Fazenda e
+# carregador primeiro (ver o comentário em `_ready()` sobre por que — é o
+# que evita a vila travar no piso de população sem comida), depois os
+# extratores, e Serraria/Forja por último (dependem da produção dos outros
+# chegar no Armazém primeiro).
 func _fill_jobs() -> void:
 	while not _pending_jobs.is_empty() and population.available() > 0:
 		var building_id: int = _pending_jobs.pop_front()
 		population.employ()
+		if building_id == -1:
+			var carrier := carriers.spawn(Vector2(_village_cell) * CELL)
+			_spawn_carrier_node(carrier)
+			continue
 		var building := buildings.list[building_id]
 		var worker := workers.spawn(Vector2(_village_cell) * CELL)
 		buildings.assign(building_id, worker)
 		workers.send_to(worker, _work_spot_for(building), pathfinder)
 		_spawn_worker_node(worker)
-
-	if _carrier_pending and population.available() > 0:
-		population.employ()
-		_carrier_pending = false
-		var carrier := carriers.spawn(Vector2(_village_cell) * CELL)
-		_spawn_carrier_node(carrier)
 
 # O Armazém nasce na própria célula da vila — é o destino fixo do
 # carregador, não precisa buscar depósito nenhum. Posto de Lenhador e
@@ -306,21 +335,32 @@ func _place_starting_buildings(start: Vector2i) -> void:
 	buildings.place(Buildings.Kind.GENERATOR, generator_cell)
 	occupied[generator_cell] = true
 
-	# Duas Casas (Fase 6): capacidade suficiente pra cobrir as vagas iniciais
-	# com folga (ver Buildings.HOUSE_CAPACITY). Não dependem de depósito nem
-	# de posição especial, só de uma célula livre perto da vila.
+	# Três Casas (a Fazenda subiu de 5 pra 6 prédios staffáveis, mais o
+	# carregador = 7 vagas; duas Casas só cobrem 6 — ver Buildings.HOUSE_CAPACITY).
+	# Não dependem de depósito nem de posição especial, só de uma célula
+	# livre perto da vila.
 	var house_a_cell := _free_cell_near(start, Vector2i(2, 0), occupied)
 	buildings.place(Buildings.Kind.HOUSE, house_a_cell)
 	occupied[house_a_cell] = true
 	var house_b_cell := _free_cell_near(start, Vector2i(0, 2), occupied)
 	buildings.place(Buildings.Kind.HOUSE, house_b_cell)
 	occupied[house_b_cell] = true
+	var house_c_cell := _free_cell_near(start, Vector2i(-2, 2), occupied)
+	buildings.place(Buildings.Kind.HOUSE, house_c_cell)
+	occupied[house_c_cell] = true
 
 	# Forja: mesmo padrão da Serraria/Oficina de Pedra — processa o minério
 	# que já chegou no Armazém, só precisa de célula livre perto da vila, não
 	# de depósito próprio.
 	var forge_cell := _free_cell_near(start, Vector2i(0, -2), occupied)
 	buildings.place(Buildings.Kind.FORGE, forge_cell)
+	occupied[forge_cell] = true
+
+	# Fazenda: também sem depósito (ver o comentário em buildings.gd sobre
+	# `DEPOSIT_KIND_OF` não ter entrada pra ela) — só precisa de célula livre
+	# perto da vila, igual Serraria/Oficina de Pedra/Forja.
+	var farm_cell := _free_cell_near(start, Vector2i(2, 2), occupied)
+	buildings.place(Buildings.Kind.FARM, farm_cell)
 
 	var solids: Array = []
 	for building in buildings.list:
@@ -381,7 +421,14 @@ func _seed_lakes() -> void:
 
 func _process(delta: float) -> void:
 	map.advance(delta)
-	population.advance(delta, buildings.housing_capacity())
+	var food_available: float = buildings.stock.get("comida", 0.0)
+	# `food_needed` espelha o cálculo interno de `Population.advance` (mesma
+	# fórmula, mesmo `count` pré-tick) só pra decidir o aviso de fome do HUD
+	# sem a classe precisar expor um sinal próprio pra isso.
+	var food_needed: float = population.count * Population.CONSUMPTION_PER_CAPITA * delta
+	var food_consumed := population.advance(delta, buildings.housing_capacity(), food_available)
+	buildings.stock["comida"] = food_available - food_consumed
+	_is_starving = food_consumed < food_needed - 0.0001
 	_fill_jobs()
 	workers.advance(delta, pathfinder)
 	buildings.advance(delta, map, workers)
@@ -588,7 +635,7 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção — Fase 7 (progressão)\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
@@ -605,10 +652,10 @@ func _build_hud() -> void:
 func _update_hud() -> void:
 	if _stock_label == null:
 		return
-	_stock_label.text = "madeira: %.1f    pedra: %.1f    minério: %.1f\ntábua: %.1f    bloco: %.1f    lingote: %.1f\npopulação: %d / %d (%d empregada)\nvila: nível %d (%.0f/%.0f XP) — alcance %d" % [
-		buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0), buildings.stock.get("minério", 0.0),
+	_stock_label.text = "madeira: %.1f    pedra: %.1f    minério: %.1f    comida: %.1f\ntábua: %.1f    bloco: %.1f    lingote: %.1f\npopulação: %d / %d (%d empregada)%s\nvila: nível %d (%.0f/%.0f XP) — alcance %d" % [
+		buildings.stock.get("madeira", 0.0), buildings.stock.get("pedra", 0.0), buildings.stock.get("minério", 0.0), buildings.stock.get("comida", 0.0),
 		buildings.stock.get("tábua", 0.0), buildings.stock.get("bloco", 0.0), buildings.stock.get("lingote", 0.0),
-		int(population.count), buildings.housing_capacity(), population.employed(),
+		int(population.count), buildings.housing_capacity(), population.employed(), " — faminta!" if _is_starving else "",
 		progression.level, progression.xp, Progression.XP_PER_LEVEL, int(progression.reveal_radius()),
 	]
 
