@@ -177,6 +177,9 @@ var _last_total_stock := 0.0
 var _is_starving := false   # lido pelo HUD — true no frame em que a comida disponível não cobriu o consumo
 var _village_cell: Vector2i
 var _pending_jobs: Array = []   # ids de Buildings.list esperando trabalhador, -1 = sentinela do carregador
+var _unlocked_level := 0        # até que nível os prédios já foram colocados (ver _maybe_unlock_next_tier)
+var _jobs_registered_up_to := 0 # índice em buildings.list já considerado pra _pending_jobs
+var _nodes_built_up_to := 0     # índice em buildings.list já com Node2D criado
 var camera: Camera2D
 var _fog_layer: Node2D
 var _water_layer: Node2D
@@ -204,7 +207,7 @@ func _ready() -> void:
 
 	_village_cell = Vector2i(MAP_COLS / 2, MAP_ROWS / 2)
 	pathfinder.setup(MAP_COLS, MAP_ROWS, CELL)
-	_place_starting_buildings(_village_cell)
+	_unlock_building_tier(1)
 
 	_build_world()
 	_build_hud()
@@ -231,34 +234,20 @@ func _ready() -> void:
 	# continuaria sendo infinita e instantânea, e Casa não teria propósito
 	# nenhum no jogo.
 	#
-	# Fazenda e carregador (sentinela -1, ver `_fill_jobs`) vêm PRIMEIRO na
-	# fila, à frente de todo o resto — não é só gosto de ordenação:
+	# A Fazenda é o único prédio staffável do nível 1 (ver
+	# `_unlock_building_tier`), então `_register_pending_jobs()` já a coloca
+	# sozinha na fila — só falta o carregador (sentinela -1, ver
+	# `_fill_jobs`) logo atrás dela. Essa ordem importa de verdade:
 	# `Population.BOOTSTRAP_POPULATION` (2) é exatamente gente o bastante pra
 	# cobrir os dois, e são os dois que fecham o ciclo "produzir comida →
 	# virar estoque de verdade" que desbloqueia crescimento além do piso de
-	# arranque (ver population.gd). Se Posto de Lenhador/Pedreira/etc.
-	# entrassem antes, os dois trabalhadores de graça do piso iriam pra lá, a
+	# arranque (ver population.gd). Se algum prédio de nível mais alto
+	# entrasse antes, os dois trabalhadores de graça do piso iriam pra lá, a
 	# Fazenda nunca ganharia gente, e a vila travaria em 2 de população pra
 	# sempre — foi exatamente o que a suíte de testes pegou na primeira
 	# versão desta mudança.
-	var farm_id := -1
-	for i in buildings.list.size():
-		if buildings.list[i].kind == Buildings.Kind.FARM:
-			farm_id = i
-			break
-	if farm_id >= 0:
-		_pending_jobs.append(farm_id)
+	_register_pending_jobs()
 	_pending_jobs.append(-1)   # sentinela: carregador
-
-	for i in buildings.list.size():
-		if i == farm_id:
-			continue
-		var building := buildings.list[i]
-		if building.kind == Buildings.Kind.WAREHOUSE or building.kind == Buildings.Kind.GENERATOR:
-			continue
-		if building.kind == Buildings.Kind.HOUSE or building.kind == Buildings.Kind.STONE_WORKSHOP:
-			continue
-		_pending_jobs.append(i)
 
 	_vision_sources.append(Vector3(_village_cell.x, _village_cell.y, progression.reveal_radius()))
 	fog.update_visibility(_vision_sources)
@@ -287,85 +276,137 @@ func _fill_jobs() -> void:
 		workers.send_to(worker, _work_spot_for(building), pathfinder)
 		_spawn_worker_node(worker)
 
-# O Armazém nasce na própria célula da vila — é o destino fixo do
-# carregador, não precisa buscar depósito nenhum. Posto de Lenhador e
-# Pedreira continuam buscando em anéis crescentes a célula de depósito mais
-# próxima (ver Buildings.nearest_deposit_cell); uma semente de mapa sem
-# floresta/pedra por perto simplesmente não ganha aquele prédio agora — não
-# é erro, é o jogo dizendo "explore mais" (mesma ideia do plano: "depósito
-# se esgota → motiva avançar pelo mapa").
-func _place_starting_buildings(start: Vector2i) -> void:
-	buildings.place(Buildings.Kind.WAREHOUSE, start)
+# Desbloqueio de prédios por nível: até aqui (fases 0-7 + Mina/Forja +
+# Fazenda), todo prédio nascia de uma vez em `_ready()`, antes de existir
+# qualquer conceito de nível — corte deliberado registrado em
+# progression.gd desde a Fase 7. Agora `Progression.level` (progression.gd)
+# gate a colocação: cada nível chama `_unlock_building_tier` uma vez (ver
+# `_maybe_unlock_next_tier`, chamado todo `_process()`), que planta só os
+# prédios daquele nível e devolve o controle — o resto do jogo (pathfinder,
+# nós da cena, fila de trabalho) já sabe reagir a `buildings.list` crescer
+# a qualquer momento, não só no frame 1.
+#
+# MAX_BUILDING_TIER: nível 5 é o teto de exploração
+# (Progression.REVEAL_RADIUS_BY_LEVEL) mas não desbloqueia prédio novo
+# nenhum — os quatro níveis abaixo já cobrem todo o catálogo do jogo.
+const MAX_BUILDING_TIER := 4
 
+func _unlock_building_tier(level: int) -> void:
+	match level:
+		1: _place_tier1_buildings(_village_cell)
+		2: _place_tier2_buildings(_village_cell)
+		3: _place_tier3_buildings(_village_cell)
+		4: _place_tier4_buildings(_village_cell)
+	pathfinder.rebuild(_solid_cells())
+	_unlocked_level = level
+
+# Nível 1 (início de jogo): só o essencial pra sobreviver — o Armazém (é a
+# própria vila), a Fazenda (sem comida a população nunca sai do piso de
+# arranque, ver population.gd) e UMA Casa (capacidade 3, cobre Fazenda +
+# carregador com folga). Nenhum extrator de matéria-prima ainda — a vila
+# começa como um posto de sobrevivência, não uma fábrica.
+func _place_tier1_buildings(start: Vector2i) -> void:
+	buildings.place(Buildings.Kind.WAREHOUSE, start)
+	var occupied := _occupied_cells()
+	var farm_cell := _free_cell_near(start, Vector2i(2, 2), occupied)
+	buildings.place(Buildings.Kind.FARM, farm_cell)
+	occupied[farm_cell] = true
+	var house_cell := _free_cell_near(start, Vector2i(2, 0), occupied)
+	buildings.place(Buildings.Kind.HOUSE, house_cell)
+
+# Nível 2: extração básica de madeira/pedra — Posto de Lenhador e Pedreira
+# buscam em anéis crescentes a célula de depósito mais próxima (ver
+# Buildings.nearest_deposit_cell); uma semente de mapa sem floresta/pedra
+# por perto simplesmente não ganha aquele prédio ainda — não é erro, é o
+# jogo dizendo "explore mais". Segunda Casa: +2 vagas staffáveis precisam de
+# +1 capacidade habitacional (Buildings.HOUSE_CAPACITY) pra não travar a
+# população antes da hora.
+func _place_tier2_buildings(start: Vector2i) -> void:
 	var forest_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.FOREST, start, BUILDING_SEARCH_RADIUS)
 	if forest_cell.x >= 0:
 		buildings.place(Buildings.Kind.LUMBERJACK, forest_cell)
 	var stone_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.STONE, start, BUILDING_SEARCH_RADIUS)
 	if stone_cell.x >= 0:
 		buildings.place(Buildings.Kind.QUARRY, stone_cell)
+	var house_cell := _free_cell_near(start, Vector2i(0, 2), _occupied_cells())
+	buildings.place(Buildings.Kind.HOUSE, house_cell)
 
-	# Mina (minério → Forja): mesma técnica de busca em anel que Posto de
-	# Lenhador e Pedreira, só que sobre o depósito de colina (Kind.HILLS) que
-	# existe desde a Fase 1 sem nenhum prédio explorando ele. Sem colina no
-	# raio, a vila simplesmente não ganha Mina — mesma regra de "explore
-	# mais" das outras duas.
+# Nível 3: Mina (terceira matéria-prima, mesma técnica de busca em anel
+# sobre `MapGen.Kind.HILLS`) e Serraria (primeiro processador — só faz
+# sentido depois que existe madeira de verdade chegando no Armazém).
+# Terceira Casa pela mesma razão da segunda.
+func _place_tier3_buildings(start: Vector2i) -> void:
 	var ore_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.HILLS, start, BUILDING_SEARCH_RADIUS)
 	if ore_cell.x >= 0:
 		buildings.place(Buildings.Kind.MINE, ore_cell)
-
-	# Serraria e Oficina de Pedra (Fase 4) não dependem de depósito nenhum —
-	# elas processam o que já chegou no Armazém, então "perto da vila" é a
-	# única exigência. Só precisam de uma célula livre, não em cima de outro
-	# prédio.
-	var occupied := {}
-	for building in buildings.list:
-		occupied[building.cell] = true
+	var occupied := _occupied_cells()
 	var sawmill_cell := _free_cell_near(start, Vector2i(2, -2), occupied)
 	buildings.place(Buildings.Kind.SAWMILL, sawmill_cell)
 	occupied[sawmill_cell] = true
+	var house_cell := _free_cell_near(start, Vector2i(-2, 2), occupied)
+	buildings.place(Buildings.Kind.HOUSE, house_cell)
+
+# Nível 4 (último tier): Oficina de Pedra, Gerador a Lenha e Forja fecham o
+# catálogo. Nenhuma Casa nova aqui — as três já colocadas (capacidade 9)
+# cobrem as 7 vagas staffáveis do jogo inteiro (Fazenda, Lenhador, Pedreira,
+# Mina, Serraria, Forja, carregador — Oficina de Pedra e Gerador não têm
+# trabalhador, ver o comentário em `_ready()`) com folga.
+func _place_tier4_buildings(start: Vector2i) -> void:
+	var occupied := _occupied_cells()
 	var workshop_cell := _free_cell_near(start, Vector2i(-2, -2), occupied)
 	buildings.place(Buildings.Kind.STONE_WORKSHOP, workshop_cell)
 	occupied[workshop_cell] = true
-
-	# Gerador a Lenha (Fase 5): perto o bastante da Oficina de Pedra pra ela
-	# ficar dentro do raio (Buildings.GENERATOR_RADIUS) e produzir só com
-	# energia — ver o comentário em _ready() sobre por que ela nasce sem
-	# trabalhador de propósito.
+	# Gerador perto o bastante da Oficina de Pedra pra ela ficar dentro do
+	# raio (Buildings.GENERATOR_RADIUS) e produzir só com energia — ver o
+	# comentário em _ready() sobre por que ela nasce sem trabalhador de
+	# propósito.
 	var generator_cell := _free_cell_near(start, Vector2i(-2, 0), occupied)
 	buildings.place(Buildings.Kind.GENERATOR, generator_cell)
 	occupied[generator_cell] = true
-
-	# Três Casas (a Fazenda subiu de 5 pra 6 prédios staffáveis, mais o
-	# carregador = 7 vagas; duas Casas só cobrem 6 — ver Buildings.HOUSE_CAPACITY).
-	# Não dependem de depósito nem de posição especial, só de uma célula
-	# livre perto da vila.
-	var house_a_cell := _free_cell_near(start, Vector2i(2, 0), occupied)
-	buildings.place(Buildings.Kind.HOUSE, house_a_cell)
-	occupied[house_a_cell] = true
-	var house_b_cell := _free_cell_near(start, Vector2i(0, 2), occupied)
-	buildings.place(Buildings.Kind.HOUSE, house_b_cell)
-	occupied[house_b_cell] = true
-	var house_c_cell := _free_cell_near(start, Vector2i(-2, 2), occupied)
-	buildings.place(Buildings.Kind.HOUSE, house_c_cell)
-	occupied[house_c_cell] = true
-
-	# Forja: mesmo padrão da Serraria/Oficina de Pedra — processa o minério
-	# que já chegou no Armazém, só precisa de célula livre perto da vila, não
-	# de depósito próprio.
 	var forge_cell := _free_cell_near(start, Vector2i(0, -2), occupied)
 	buildings.place(Buildings.Kind.FORGE, forge_cell)
-	occupied[forge_cell] = true
 
-	# Fazenda: também sem depósito (ver o comentário em buildings.gd sobre
-	# `DEPOSIT_KIND_OF` não ter entrada pra ela) — só precisa de célula livre
-	# perto da vila, igual Serraria/Oficina de Pedra/Forja.
-	var farm_cell := _free_cell_near(start, Vector2i(2, 2), occupied)
-	buildings.place(Buildings.Kind.FARM, farm_cell)
+func _occupied_cells() -> Dictionary:
+	var occupied := {}
+	for building in buildings.list:
+		occupied[building.cell] = true
+	return occupied
 
+func _solid_cells() -> Array:
 	var solids: Array = []
 	for building in buildings.list:
 		solids.append(building.cell)
-	pathfinder.rebuild(solids)
+	return solids
+
+# Chamada uma vez por prédio novo (inicial ou desbloqueado depois) — separa
+# "quem precisa de trabalhador" de "quem é infraestrutura passiva", mesma
+# regra desde a Fase 5/6. Usa `_jobs_registered_up_to` pra nunca reconsiderar
+# um prédio já enfileirado, já que `buildings.list` só cresce (nunca reordena
+# nem remove).
+func _register_pending_jobs() -> void:
+	while _jobs_registered_up_to < buildings.list.size():
+		var i := _jobs_registered_up_to
+		_jobs_registered_up_to += 1
+		var building := buildings.list[i]
+		if building.kind == Buildings.Kind.WAREHOUSE or building.kind == Buildings.Kind.GENERATOR:
+			continue
+		if building.kind == Buildings.Kind.HOUSE or building.kind == Buildings.Kind.STONE_WORKSHOP:
+			continue
+		_pending_jobs.append(i)
+
+# Chamada todo `_process()`: assim que a vila sobe de nível o bastante pra
+# desbloquear o próximo tier, planta os prédios daquele nível, refaz o
+# pathfinder (novos prédios são sólidos) e coloca os novos nós na cena — a
+# mesma sincronização que `_build_world()` fez uma vez no frame 1, agora
+# repetível. Nada acontece depois de `MAX_BUILDING_TIER`: nível 5 só amplia
+# o alcance de exploração (`_advance_progression`), não o catálogo de
+# prédios.
+func _maybe_unlock_next_tier() -> void:
+	if _unlocked_level >= MAX_BUILDING_TIER or progression.level <= _unlocked_level:
+		return
+	_unlock_building_tier(_unlocked_level + 1)
+	_register_pending_jobs()
+	_sync_new_building_nodes()
 
 # Busca em anéis crescentes a partir de `start + offset` — mesma técnica de
 # `Buildings.nearest_deposit_cell`, mas contra um conjunto de células já
@@ -434,6 +475,7 @@ func _process(delta: float) -> void:
 	buildings.advance(delta, map, workers)
 	carriers.advance(delta, pathfinder, buildings)
 	_advance_progression()
+	_maybe_unlock_next_tier()
 	pathfinder.decay(delta)
 	_sync_building_nodes()
 	_sync_worker_nodes()
@@ -583,10 +625,7 @@ func _build_world() -> void:
 	_buildings_root = Node2D.new()
 	_buildings_root.name = "Buildings"
 	world.add_child(_buildings_root)
-	for building in buildings.list:
-		var node := _make_building_node(building)
-		_buildings_root.add_child(node)
-		_building_nodes[building] = node
+	_sync_new_building_nodes()
 
 	_workers_root = Node2D.new()
 	_workers_root.name = "Workers"
@@ -708,6 +747,18 @@ func _make_building_node(building: Buildings.Building) -> Node2D:
 	node.add_child(bolt)
 
 	return node
+
+# Cria o Node2D de todo prédio ainda sem um — no frame 1 (`_build_world`)
+# isso cobre o tier 1 inteiro; a cada desbloqueio de nível
+# (`_maybe_unlock_next_tier`) cobre só os prédios novos daquele tier.
+# `_nodes_built_up_to` evita recriar o nó de um prédio que já tem um.
+func _sync_new_building_nodes() -> void:
+	while _nodes_built_up_to < buildings.list.size():
+		var building := buildings.list[_nodes_built_up_to]
+		_nodes_built_up_to += 1
+		var node := _make_building_node(building)
+		_buildings_root.add_child(node)
+		_building_nodes[building] = node
 
 func _sync_building_nodes() -> void:
 	for building in buildings.list:

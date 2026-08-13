@@ -108,6 +108,7 @@ func _initialize() -> void:
 	await _test_scene_camera_limits_to_map_size()
 	await _test_scene_click_reveals_fog()
 	await _test_scene_pan_moves_camera_within_limits()
+	await _test_scene_buildings_unlock_progressively()
 	await _test_scene_worker_arrives_and_produces()
 	await _test_scene_population_grows_up_to_three_houses()
 	await _test_scene_progression_grows_reveal_radius()
@@ -1115,6 +1116,18 @@ func _boot_main() -> Node:
 	root.add_child(main)
 	return main
 
+# Prédios agora nascem por nível (ver `_maybe_unlock_next_tier` em main.gd),
+# não todos de uma vez no frame 1 — vários testes de cena precisam de um
+# tier específico já desbloqueado antes de procurar um prédio por Kind.
+# Devolve o número de passos usados, pra quem chama poder mostrar isso numa
+# mensagem de falha.
+func _advance_to_tier(main: Node, tier: int, max_steps: int) -> int:
+	var steps := 0
+	while steps < max_steps and main._unlocked_level < tier:
+		main._process(1.0 / 30.0)
+		steps += 1
+	return steps
+
 func _test_scene_boots() -> void:
 	var main := _boot_main()
 	await process_frame
@@ -1194,6 +1207,48 @@ func _test_scene_pan_moves_camera_within_limits() -> void:
 	main.queue_free()
 	await process_frame
 
+# Testa o mecanismo de desbloqueio por nível em si (`_unlock_building_tier`
+# em main.gd): cada tier acrescenta prédios específicos e nunca planta os de
+# um tier ainda não alcançado. Só verifica os prédios que NÃO dependem de
+# depósito (sempre nascem, qualquer semente) — Posto de Lenhador/Pedreira/
+# Mina ficam de fora daqui de propósito, já cobertos por outros testes que
+# lidam com a semente não ter o depósito por perto.
+func _test_scene_buildings_unlock_progressively() -> void:
+	var main := _boot_main()
+	await process_frame
+	_check(main._unlocked_level == 1, "a vila nasce já no tier 1")
+	var kinds1: Array = main.buildings.list.map(func(b): return b.kind)
+	_check(Buildings.Kind.WAREHOUSE in kinds1 and Buildings.Kind.FARM in kinds1 and Buildings.Kind.HOUSE in kinds1, "tier 1 tem Armazém, Fazenda e uma Casa")
+	_check(not (Buildings.Kind.SAWMILL in kinds1) and not (Buildings.Kind.FORGE in kinds1), "prédios de tiers mais altos ainda não existem no tier 1")
+
+	var s2 := _advance_to_tier(main, 2, 40000)
+	_check(main._unlocked_level >= 2, "sobe pro tier 2 dentro de um teto razoável (%d passos)" % s2)
+	var kinds2: Array = main.buildings.list.map(func(b): return b.kind)
+	_check(kinds2.count(Buildings.Kind.HOUSE) == 2, "tier 2 acrescenta a segunda Casa")
+	_check(not (Buildings.Kind.SAWMILL in kinds2), "Serraria continua fora até o tier 3")
+
+	var s3 := _advance_to_tier(main, 3, 40000)
+	var kinds3: Array = main.buildings.list.map(func(b): return b.kind)
+	_check(Buildings.Kind.SAWMILL in kinds3, "tier 3 acrescenta a Serraria (%d passos)" % s3)
+	_check(kinds3.count(Buildings.Kind.HOUSE) == 3, "tier 3 acrescenta a terceira Casa")
+	_check(not (Buildings.Kind.FORGE in kinds3) and not (Buildings.Kind.STONE_WORKSHOP in kinds3), "Forja e Oficina de Pedra continuam fora até o tier 4")
+
+	var s4 := _advance_to_tier(main, 4, 40000)
+	var kinds4: Array = main.buildings.list.map(func(b): return b.kind)
+	_check(Buildings.Kind.STONE_WORKSHOP in kinds4 and Buildings.Kind.GENERATOR in kinds4 and Buildings.Kind.FORGE in kinds4, "tier 4 acrescenta Oficina de Pedra, Gerador e Forja (%d passos)" % s4)
+
+	# Depois do último tier, subir de nível continua acontecendo (o alcance
+	# de exploração ainda cresce, ver progression.gd), mas nenhum prédio
+	# novo aparece — MAX_BUILDING_TIER é um teto de verdade, não só um
+	# número que nunca é alcançado na prática.
+	var buildings_before: int = main.buildings.list.size()
+	for _i in 6000:
+		main._process(1.0 / 30.0)
+	_check(main.buildings.list.size() == buildings_before, "depois do tier 4, subir de nível não planta prédio novo nenhum (%d prédios antes e depois)" % buildings_before)
+
+	main.queue_free()
+	await process_frame
+
 func _test_scene_worker_arrives_and_produces() -> void:
 	var main := _boot_main()
 	await process_frame
@@ -1204,25 +1259,28 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	# de Pedra nasce sem trabalhador nenhum pra provar "energia OU
 	# trabalhador" (ver o comentário em main.gd _ready()).
 	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE]
-	var staffable: Array = main.buildings.list.filter(func(b): return not (b.kind in unstaffed_kinds))
-	_check(staffable.size() >= 1, "a cena consegue colocar pelo menos um prédio com trabalhador")
 
 	# Fase 6: mão de obra não é mais instantânea — a população começa em
-	# zero, então no primeiro frame ninguém tem trabalhador ainda nenhum.
+	# zero, então no primeiro frame ninguém tem trabalhador ainda nenhum. No
+	# tier 1 (o único que já existe agora) isso vale só pra Fazenda.
 	_check(main.workers.list.is_empty(), "no primeiro frame ainda não há trabalhador nenhum — população começa em zero")
-	for building in staffable:
+	for building in main.buildings.list:
+		if building.kind in unstaffed_kinds:
+			continue
 		_check(building.worker_id == -1, "prédio staffável espera na fila até a população crescer o bastante")
+
+	# Prédios continuam aparecendo por vários níveis (ver
+	# `_unlock_building_tier`) — só depois do último tier dá pra saber o
+	# conjunto FINAL de prédios staffáveis do jogo e testar todos de uma vez.
+	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
+	var staffable: Array = main.buildings.list.filter(func(b): return not (b.kind in unstaffed_kinds))
+	_check(staffable.size() >= 1, "a vila termina com pelo menos um prédio staffável (%d passos até o último tier)" % unlock_steps)
 
 	var workshop_matches: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
 
 	# `Array.all()` num array vazio devolve true (vácuo) — por isso o
 	# tamanho entra na condição também, senão o loop sairia no passo 0 antes
 	# de qualquer trabalhador sequer nascer.
-	#
-	# Teto de passos maior que antes da Fazenda existir: com 6 prédios
-	# staffáveis + carregador (7 vagas), a população precisa passar do piso
-	# de arranque (comida chegando de verdade) antes de terminar de
-	# preencher a fila toda — ver o comentário em main.gd _ready().
 	var steps := 0
 	while steps < 6000 and (main.workers.list.size() < staffable.size() or not main.workers.list.all(func(w): return w.state == Worker.State.WORKING)):
 		main._process(1.0 / 30.0)
@@ -1233,22 +1291,26 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	if workshop_matches.size() > 0:
 		_check(workshop_matches[0].worker_id == -1, "a Oficina de Pedra nunca ganha trabalhador — energia é quem sustenta ela")
 
-	# Soma pátio + estoque já entregue, não só o pátio: o carregador só MOVE
-	# produção de um pro outro, nunca destrói — checar os dois juntos é
-	# imune ao carregador ter passado bem no meio da janela de medição
-	# (checar só o pátio, isolado, é exatamente o que flertava com falso
-	# negativo aqui).
+	# "Pátio + estoque entregue nunca regride" deixou de ser um invariante
+	# seguro agora que a vila inteira existe (todos os 4 tiers): Serraria e
+	# Gerador consomem madeira de verdade, Oficina de Pedra consome pedra,
+	# Forja consome minério, e a própria população consome comida — o
+	# estoque de um recurso pode cair mesmo com o extrator dele staffado e
+	# produzindo, porque a queda vem de outro consumidor, não de falha de
+	# produção. O que este teste consegue garantir de verdade: o pátio de
+	# cada extrator staffado teve produção de verdade (ficou > 0) em algum
+	# momento da janela — não que o total nunca desça.
 	var extractors: Array = staffable.filter(func(b): return Buildings.RESOURCE_OF.has(b.kind))
-	var before := {}
+	var saw_production := {}
 	for building in extractors:
-		var resource: String = Buildings.RESOURCE_OF[building.kind]
-		before[building.cell] = building.buffer + main.buildings.stock.get(resource, 0.0)
+		saw_production[building.cell] = building.buffer > 0.0
 	for _i in 60:
 		main._process(1.0 / 30.0)
+		for building in extractors:
+			if building.buffer > 0.0:
+				saw_production[building.cell] = true
 	for building in extractors:
-		var resource: String = Buildings.RESOURCE_OF[building.kind]
-		var after: float = building.buffer + main.buildings.stock.get(resource, 0.0)
-		_check(after >= before[building.cell], "com trabalhador no posto, pátio + estoque entregue nunca regride")
+		_check(saw_production[building.cell], "extrator staffado produziu de verdade (pátio > 0) em algum momento da janela")
 
 	main.queue_free()
 	await process_frame
@@ -1256,23 +1318,24 @@ func _test_scene_worker_arrives_and_produces() -> void:
 func _test_scene_population_grows_up_to_three_houses() -> void:
 	var main := _boot_main()
 	await process_frame
-	var houses: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE)
-	# Três casas, não duas: a Fazenda é o sexto prédio staffável, e junto com
-	# o carregador soma 7 vagas — duas casas (capacidade 6) já não cobririam
-	# nem as vagas, quanto mais deixar folga (ver o comentário em
-	# _place_starting_buildings).
-	_check(houses.size() == 3, "a cena coloca três casas perto da vila")
-	_check(main.buildings.housing_capacity() == Buildings.HOUSE_CAPACITY * 3, "a capacidade bate com o número de casas")
 	# Não é exatamente 0.0: pelo menos um frame de verdade já rodou entre o
 	# _ready() e esta checagem (o `await process_frame` do _boot_main), e
 	# esse frame já chama _process() com o delta real do motor.
 	_check(main.population.count < 1.0, "população praticamente não cresceu ainda logo após instanciar (%.3f)" % main.population.count)
+	var houses_at_start: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE)
+	_check(houses_at_start.size() == 1, "a vila nasce com só UMA casa — as outras duas vêm com os níveis 2 e 3 (ver _unlock_building_tier)")
 
-	# Teto de passos maior que a Fase 6 original: agora crescer além do piso
-	# de arranque (`Population.BOOTSTRAP_POPULATION`) depende da Fazenda
-	# produzir, do carregador entregar no Armazém, e só DEPOIS disso a
-	# população volta a crescer de verdade — mais uma etapa na cadeia do que
-	# antes da comida existir.
+	# Prédios (inclusive Casa) só terminam de aparecer quando a vila sobe até
+	# o último tier — ver o comentário em `_advance_to_tier`.
+	var steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
+	var houses: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE)
+	# Três casas, não duas: a Fazenda é o sexto prédio staffável, e junto com
+	# o carregador soma 7 vagas — duas casas (capacidade 6) já não cobririam
+	# nem as vagas, quanto mais deixar folga (ver o comentário em
+	# _place_tier4_buildings).
+	_check(houses.size() == 3, "com tempo suficiente, a vila termina com três casas (%d passos)" % steps)
+	_check(main.buildings.housing_capacity() == Buildings.HOUSE_CAPACITY * 3, "a capacidade bate com o número de casas")
+
 	for _i in 6000:
 		main._process(1.0 / 30.0)
 	_near(main.population.count, float(main.buildings.housing_capacity()), 0.01, "com tempo suficiente, população enche exatamente a capacidade habitacional")
@@ -1336,9 +1399,13 @@ func _test_scene_carrier_delivers_to_warehouse() -> void:
 func _test_scene_processing_chain_produces_tabua_and_bloco() -> void:
 	var main := _boot_main()
 	await process_frame
+	# Serraria só existe a partir do tier 3, Oficina de Pedra só do tier 4
+	# (ver `_unlock_building_tier` em main.gd) — a cadeia inteira precisa da
+	# vila já no último tier antes de sequer procurar os dois prédios.
+	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
 	var sawmill: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.SAWMILL)
 	var workshop: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
-	_check(sawmill.size() == 1 and workshop.size() == 1, "a cena coloca Serraria e Oficina de Pedra")
+	_check(sawmill.size() == 1 and workshop.size() == 1, "a vila termina com Serraria e Oficina de Pedra (%d passos até o último tier)" % unlock_steps)
 	_check(workshop[0].worker_id == -1, "a Oficina de Pedra continua sem trabalhador durante todo o teste")
 
 	var steps := 0
@@ -1365,9 +1432,12 @@ func _test_scene_processing_chain_produces_tabua_and_bloco() -> void:
 func _test_scene_ore_chain_produces_lingote() -> void:
 	var main := _boot_main()
 	await process_frame
+	# Mina só existe a partir do tier 3, Forja só do tier 4 (ver
+	# `_unlock_building_tier` em main.gd).
+	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
 	var mine: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.MINE)
 	var forge: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.FORGE)
-	_check(forge.size() == 1, "a cena sempre coloca a Forja perto da vila")
+	_check(forge.size() == 1, "a vila termina com a Forja (%d passos até o último tier)" % unlock_steps)
 	if mine.is_empty():
 		# A semente de teste fixa (9001, via _boot_main) pode não ter colina
 		# dentro do raio de busca — mesma regra de "explore mais" das outras

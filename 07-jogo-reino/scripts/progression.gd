@@ -5,14 +5,11 @@ extends RefCounted
 # — qualquer tipo conta (madeira, pedra, tábua, bloco), é XP puro por
 # volume, sem hierarquia de valor entre recursos ainda.
 #
-# Por ora, nível só desbloqueia ALCANCE DE EXPLORAÇÃO (o raio que a névoa
-# revela ao redor da vila) — ver `reveal_radius()`. "Desbloqueio de
-# prédios", que o plano do projeto também pede pra esta fase, fica de fora
-# de propósito: hoje TODO prédio nasce de uma vez em `_place_starting_buildings`
-# (main.gd), antes de existir qualquer conceito de nível; gatear isso por
-# nível pediria reescrever a colocação de prédios pra ser progressiva, uma
-# mudança de arquitetura maior do que o resto desta fase. Fica registrado
-# como corte deliberado, não esquecimento — ver docs/plano-projeto7-reino.md.
+# Nível desbloqueia ALCANCE DE EXPLORAÇÃO (o raio que a névoa revela ao
+# redor da vila) — ver `reveal_radius()`. "Desbloqueio de prédios" por
+# nível, que ficou de fora de propósito na Fase 7 (exigiria reescrever a
+# colocação de prédios pra ser progressiva), veio depois — ver
+# `main.gd::_unlock_building_tier` e docs/plano-projeto7-reino.md.
 
 # Medido rodando a economia real (ver tests/calibrate_progression.gd,
 # removido depois de usado): com um extrator só ativo no começo do jogo, o
