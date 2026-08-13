@@ -132,6 +132,13 @@ const C_BUILDING := {
 	# Serraria (d1a63e). Framboesa contrasta com o verde do chão E com todo
 	# o resto da paleta de prédios já em uso.
 	Buildings.Kind.FARM: Color("c9518f"),
+	# Roda D'Água nasce perto de água de verdade (chão azul do WaterSim bem
+	# ao lado) — turquesa fica claramente diferente tanto do azul da água
+	# quanto do azul-acinzentado já usado pela Casa.
+	Buildings.Kind.WATERWHEEL: Color("45b8ac"),
+	# Moinho de Vento nasce em terreno elevado (grama alta, ainda verde) —
+	# tom claro e frio contrasta com o verde sem repetir o creme do Armazém.
+	Buildings.Kind.WINDMILL: Color("cfd8e3"),
 }
 const C_BUILDING_ROOF := {
 	Buildings.Kind.LUMBERJACK: Color("5c3a20"),
@@ -144,6 +151,8 @@ const C_BUILDING_ROOF := {
 	Buildings.Kind.MINE: Color("2e2e3a"),
 	Buildings.Kind.FORGE: Color("8a3d16"),
 	Buildings.Kind.FARM: Color("7a2f52"),
+	Buildings.Kind.WATERWHEEL: Color("2a6e66"),
+	Buildings.Kind.WINDMILL: Color("8b96a3"),
 }
 const C_BUILDING_OUTLINE := Color("1a1410")
 const STATE_COLORS := {
@@ -219,13 +228,14 @@ func _ready() -> void:
 	# posto", não staffing fracionário: isso só passaria a valer a pena com
 	# múltiplas vagas por prédio (ver o comentário em buildings.gd).
 	#
-	# Duas exceções deliberadas (Fase 5): o Armazém e o Gerador nunca têm
+	# Exceções deliberadas: o Armazém e as três fontes de energia (Gerador,
+	# Roda D'Água, Moinho de Vento — Fase 5 e nível 5) nunca têm
 	# trabalhador — são infraestrutura passiva, não produção. E a Oficina de
 	# Pedra, apesar de PODER ter trabalhador, nasce sem nenhum de propósito:
 	# é o jeito mais direto de mostrar "energia OU trabalhador" de verdade —
-	# ela só produz porque está no raio do Gerador, não por acaso ter os
-	# dois. Posto de Lenhador, Pedreira e Serraria continuam com trabalhador
-	# como sempre.
+	# ela só produz porque está no raio de uma fonte de energia, não por
+	# acaso ter os dois. Posto de Lenhador, Pedreira e Serraria continuam
+	# com trabalhador como sempre.
 	#
 	# A partir da Fase 6, "precisa de trabalhador" não é mais "nasce com um
 	# trabalhador": os prédios entram numa FILA (`_pending_jobs`), e quem
@@ -286,10 +296,10 @@ func _fill_jobs() -> void:
 # nós da cena, fila de trabalho) já sabe reagir a `buildings.list` crescer
 # a qualquer momento, não só no frame 1.
 #
-# MAX_BUILDING_TIER: nível 5 é o teto de exploração
-# (Progression.REVEAL_RADIUS_BY_LEVEL) mas não desbloqueia prédio novo
-# nenhum — os quatro níveis abaixo já cobrem todo o catálogo do jogo.
-const MAX_BUILDING_TIER := 4
+# MAX_BUILDING_TIER: nível 5 é o teto de `Progression.REVEAL_RADIUS_BY_LEVEL`
+# — o último nível que existe. Roda D'Água e Moinho de Vento nascem aqui,
+# fechando o catálogo do jogo de vez.
+const MAX_BUILDING_TIER := 5
 
 func _unlock_building_tier(level: int) -> void:
 	match level:
@@ -297,6 +307,7 @@ func _unlock_building_tier(level: int) -> void:
 		2: _place_tier2_buildings(_village_cell)
 		3: _place_tier3_buildings(_village_cell)
 		4: _place_tier4_buildings(_village_cell)
+		5: _place_tier5_buildings(_village_cell)
 	pathfinder.rebuild(_solid_cells())
 	_unlocked_level = level
 
@@ -346,11 +357,11 @@ func _place_tier3_buildings(start: Vector2i) -> void:
 	var house_cell := _free_cell_near(start, Vector2i(-2, 2), occupied)
 	buildings.place(Buildings.Kind.HOUSE, house_cell)
 
-# Nível 4 (último tier): Oficina de Pedra, Gerador a Lenha e Forja fecham o
-# catálogo. Nenhuma Casa nova aqui — as três já colocadas (capacidade 9)
-# cobrem as 7 vagas staffáveis do jogo inteiro (Fazenda, Lenhador, Pedreira,
-# Mina, Serraria, Forja, carregador — Oficina de Pedra e Gerador não têm
-# trabalhador, ver o comentário em `_ready()`) com folga.
+# Nível 4: Oficina de Pedra, Gerador a Lenha e Forja. Nenhuma Casa nova
+# aqui — as três já colocadas (capacidade 9) cobrem as 7 vagas staffáveis do
+# jogo inteiro (Fazenda, Lenhador, Pedreira, Mina, Serraria, Forja,
+# carregador — Oficina de Pedra e Gerador não têm trabalhador, ver o
+# comentário em `_ready()`) com folga.
 func _place_tier4_buildings(start: Vector2i) -> void:
 	var occupied := _occupied_cells()
 	var workshop_cell := _free_cell_near(start, Vector2i(-2, -2), occupied)
@@ -365,6 +376,76 @@ func _place_tier4_buildings(start: Vector2i) -> void:
 	occupied[generator_cell] = true
 	var forge_cell := _free_cell_near(start, Vector2i(0, -2), occupied)
 	buildings.place(Buildings.Kind.FORGE, forge_cell)
+
+# Nível 5 (último tier): Roda D'Água e Moinho de Vento, segunda e terceira
+# fonte de energia do plano original — grátis pra operar (ver o comentário
+# em buildings.gd), mas cada uma só nasce se existir um lugar válido perto
+# da vila: Roda D'Água precisa de uma célula de grama com água de verdade
+# do lado (`_cell_near_water`, lê o `WaterSim` de verdade, não um número
+# decorativo), Moinho de Vento precisa de terreno alto o bastante pra
+# "aberto/elevado" significar alguma coisa (`_cell_on_high_ground`, mesmo
+# `map.height_at` que decide onde nasce colina). Sem água ou sem terreno
+# alto perto o bastante, aquele prédio simplesmente não nasce desta vez —
+# mesma regra de "explore mais" dos extratores de depósito.
+func _place_tier5_buildings(start: Vector2i) -> void:
+	var occupied := _occupied_cells()
+	var waterwheel_cell := _cell_near_water(start, occupied)
+	if waterwheel_cell.x >= 0:
+		buildings.place(Buildings.Kind.WATERWHEEL, waterwheel_cell)
+		occupied[waterwheel_cell] = true
+	var windmill_cell := _cell_on_high_ground(start, occupied)
+	if windmill_cell.x >= 0:
+		buildings.place(Buildings.Kind.WINDMILL, windmill_cell)
+
+# Profundidade mínima de água numa célula vizinha pra contar como "rio/lago
+# ao lado" — bem acima do limiar visual de desenho (`WATER_VISIBLE_MIN`),
+# pra não colocar a Roda D'Água ao lado de uma poça residual quase seca.
+const WATERWHEEL_MIN_ADJACENT_WATER := 0.2
+# Mesmo limiar de altura que decide onde nasce colina (`MapGen.HILLS_HEIGHT`)
+# NÃO serve aqui: qualquer célula acima dele já virou Kind.HILLS, nunca
+# GRASS. "Elevado o bastante pra vento, mas ainda não é colina" pede um
+# limiar mais baixo — medido rodando o mapa de verdade (a maioria da grama
+# fica entre 2 e 4 de altura, ver map_gen.gd): 3.0 acha terreno genuinamente
+# alto sem ficar tão raro que o Moinho quase nunca nasça.
+const WINDMILL_MIN_HEIGHT := 3.0
+
+func _cell_near_water(start: Vector2i, occupied: Dictionary) -> Vector2i:
+	for radius in range(0, BUILDING_SEARCH_RADIUS + 1):
+		for dx in range(-radius, radius + 1):
+			for dy in range(-radius, radius + 1):
+				if maxi(absi(dx), absi(dy)) != radius:
+					continue
+				var cell := start + Vector2i(dx, dy)
+				if not map.inside(cell.x, cell.y) or occupied.has(cell):
+					continue
+				if map.kind_at(cell.x, cell.y) != MapGen.Kind.GRASS:
+					continue
+				if _has_adjacent_water(cell):
+					return cell
+	return Vector2i(-1, -1)
+
+func _has_adjacent_water(cell: Vector2i) -> bool:
+	var offsets: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	for offset in offsets:
+		var n: Vector2i = cell + offset
+		if map.inside(n.x, n.y) and water_sim.water_at(n.x, n.y) >= WATERWHEEL_MIN_ADJACENT_WATER:
+			return true
+	return false
+
+func _cell_on_high_ground(start: Vector2i, occupied: Dictionary) -> Vector2i:
+	for radius in range(0, BUILDING_SEARCH_RADIUS + 1):
+		for dx in range(-radius, radius + 1):
+			for dy in range(-radius, radius + 1):
+				if maxi(absi(dx), absi(dy)) != radius:
+					continue
+				var cell := start + Vector2i(dx, dy)
+				if not map.inside(cell.x, cell.y) or occupied.has(cell):
+					continue
+				if map.kind_at(cell.x, cell.y) != MapGen.Kind.GRASS:
+					continue
+				if map.height_at(cell.x, cell.y) >= WINDMILL_MIN_HEIGHT:
+					return cell
+	return Vector2i(-1, -1)
 
 func _occupied_cells() -> Dictionary:
 	var occupied := {}
@@ -392,15 +473,17 @@ func _register_pending_jobs() -> void:
 			continue
 		if building.kind == Buildings.Kind.HOUSE or building.kind == Buildings.Kind.STONE_WORKSHOP:
 			continue
+		if building.kind == Buildings.Kind.WATERWHEEL or building.kind == Buildings.Kind.WINDMILL:
+			continue
 		_pending_jobs.append(i)
 
 # Chamada todo `_process()`: assim que a vila sobe de nível o bastante pra
 # desbloquear o próximo tier, planta os prédios daquele nível, refaz o
 # pathfinder (novos prédios são sólidos) e coloca os novos nós na cena — a
 # mesma sincronização que `_build_world()` fez uma vez no frame 1, agora
-# repetível. Nada acontece depois de `MAX_BUILDING_TIER`: nível 5 só amplia
-# o alcance de exploração (`_advance_progression`), não o catálogo de
-# prédios.
+# repetível. Nada acontece depois de `MAX_BUILDING_TIER` (nível 5): a partir
+# daí, subir de nível só amplia o alcance de exploração
+# (`_advance_progression`), o catálogo de prédios já fechou.
 func _maybe_unlock_next_tier() -> void:
 	if _unlocked_level >= MAX_BUILDING_TIER or progression.level <= _unlocked_level:
 		return

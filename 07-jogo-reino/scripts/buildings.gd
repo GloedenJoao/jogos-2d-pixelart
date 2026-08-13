@@ -65,8 +65,19 @@ extends RefCounted
 # `map.extract()` (finito); sem entrada, produz direto pro pátio (fonte
 # renovável, só limitada pelo teto do pátio, igual às outras — ainda precisa
 # de `Carrier` pra virar estoque jogável, não é atalho).
+#
+# Roda D'Água e Moinho de Vento: segunda e terceira fonte de energia do
+# plano original (o Gerador a Lenha foi só a primeira). As duas cobrem raio
+# como o Gerador (`POWER_SOURCE_KINDS`, mesmo `GENERATOR_RADIUS`), mas NÃO
+# entram em `FUELED_POWER_KINDS` — de propósito grátis pra operar depois de
+# construídas, porque o "custo" delas já foi pago na hora de escolher onde
+# plantar (só nascem se `main.gd` achar uma célula válida: Roda D'Água perto
+# de água de verdade no `WaterSim`, Moinho de Vento em terreno alto o
+# bastante). `_compute_powered` não sabe nem precisa saber POR QUE cada
+# fonte é válida — só que fonte-com-combustível gasta estoque, fonte-livre
+# não.
 
-enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR, HOUSE, MINE, FORGE, FARM }
+enum Kind { LUMBERJACK, QUARRY, WAREHOUSE, SAWMILL, STONE_WORKSHOP, GENERATOR, HOUSE, MINE, FORGE, FARM, WATERWHEEL, WINDMILL }
 
 const RESOURCE_OF := {
 	Kind.LUMBERJACK: "madeira",
@@ -124,6 +135,13 @@ const GENERATOR_FUEL_RESOURCE := "madeira"
 # sobrar madeira pra processar. Energia é alternativa ao trabalhador, não
 # prioridade sobre o resto da cadeia.
 const GENERATOR_FUEL_RATE := 0.3
+
+# Toda fonte de energia (todas cobrem o mesmo raio, `GENERATOR_RADIUS`) —
+# só o Gerador está em `FUELED_POWER_KINDS` e por isso é o único que
+# consome `GENERATOR_FUEL_RESOURCE`; Roda D'Água e Moinho de Vento operam
+# de graça (ver o comentário no topo do arquivo).
+const POWER_SOURCE_KINDS := [Kind.GENERATOR, Kind.WATERWHEEL, Kind.WINDMILL]
+const FUELED_POWER_KINDS := [Kind.GENERATOR]
 
 # Pessoas por Casa. Duas casas (o que `main.gd` planta perto da vila) somam
 # 6 — cobre as 4 vagas iniciais (Posto de Lenhador, Pedreira, Serraria,
@@ -193,37 +211,39 @@ func _is_staffed(building: Building, workers: Workers) -> bool:
 	var w := _worker_by_id(workers, building.worker_id)
 	return w != null and w.state == Worker.State.WORKING
 
-# Um gerador só acende (e só gasta combustível) se existir pelo menos um
-# prédio no raio que REALMENTE precisa dele agora (sem trabalhador WORKING
-# no momento) — ver o comentário no topo do arquivo sobre por que isso
-# importa. Um prédio já staffado dentro do raio não conta como demanda, mas
-# ainda ganha `powered=true` se o gerador acender por causa de outro vizinho
-# — não tem custo extra em cobrir os dois, só não é ELE quem justifica o
-# gerador queimar madeira.
+# Uma fonte de energia (Gerador, Roda D'Água ou Moinho de Vento) só
+# "acende" se existir pelo menos um prédio no raio que REALMENTE precisa
+# dela agora (sem trabalhador WORKING no momento) — ver o comentário no
+# topo do arquivo sobre por que isso importa. Um prédio já staffado dentro
+# do raio não conta como demanda, mas ainda ganha `powered=true` se a fonte
+# acender por causa de outro vizinho — não tem custo extra em cobrir os
+# dois, só não é ELE quem justifica gastar combustível (quando a fonte tem
+# combustível pra gastar).
 func _compute_powered(delta: float, workers: Workers) -> Dictionary:
 	var powered := {}
-	for generator in list:
-		if generator.kind != Kind.GENERATOR:
+	for source in list:
+		if not (source.kind in POWER_SOURCE_KINDS):
 			continue
 		var in_range: Array = []
 		var needs_power := false
 		for building in list:
-			if building == generator:
+			if building == source:
 				continue
 			if not (RESOURCE_OF.has(building.kind) or PROCESS_RECIPES.has(building.kind)):
 				continue
-			if Vector2(building.cell).distance_to(Vector2(generator.cell)) > GENERATOR_RADIUS:
+			if Vector2(building.cell).distance_to(Vector2(source.cell)) > GENERATOR_RADIUS:
 				continue
 			in_range.append(building)
 			if not _is_staffed(building, workers):
 				needs_power = true
 		if not needs_power:
 			continue
-		var available: float = stock.get(GENERATOR_FUEL_RESOURCE, 0.0)
-		var used: float = minf(GENERATOR_FUEL_RATE * delta, available)
-		if used <= 0.0:
-			continue
-		stock[GENERATOR_FUEL_RESOURCE] = available - used
+		if source.kind in FUELED_POWER_KINDS:
+			var available: float = stock.get(GENERATOR_FUEL_RESOURCE, 0.0)
+			var used: float = minf(GENERATOR_FUEL_RATE * delta, available)
+			if used <= 0.0:
+				continue
+			stock[GENERATOR_FUEL_RESOURCE] = available - used
 		for building in in_range:
 			powered[building] = true
 	return powered

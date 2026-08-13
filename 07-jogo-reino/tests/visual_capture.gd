@@ -42,7 +42,7 @@ func _initialize() -> void:
 	# staffáveis ganharem trabalhador e chegarem a WORKING — um único prédio
 	# ficar de fora do enquadramento (ou de pé, esperando) foi exatamente o
 	# que confundiu o João da primeira vez.
-	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE]
+	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE, Buildings.Kind.WATERWHEEL, Buildings.Kind.WINDMILL]
 	var staffable: Array = main.buildings.list.filter(func(b): return not (b.kind in unstaffed_kinds))
 	if not main.buildings.list.is_empty():
 		var mid := Vector2.ZERO
