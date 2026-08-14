@@ -1,18 +1,27 @@
 extends Node2D
 
-# Fase 7: progressão. A vila sobe de nível conforme acumula recurso entregue
-# no Armazém (`Progression.add_xp`, chamado em `_advance_progression` a
-# partir do delta de `Buildings.stock` — processamento só CONVERTE 1:1, então
-# a soma total só sobe quando o carregador entrega algo novo de verdade).
-# Cada nível aumenta o ALCANCE DE EXPLORAÇÃO: o raio que a névoa revela ao
-# redor da vila cresce de verdade, não é só um número guardado.
+# Agência de jogador: até aqui (fases 0-7 + Mina/Forja + Fazenda +
+# desbloqueio por nível + Roda D'Água/Moinho de Vento) o jogo inteiro rodava
+# SOZINHO — todo prédio nascia automático (por nível, não mais tudo de uma
+# vez, mas ainda sem decisão nenhuma do jogador). João abriu o jogo pra
+# jogar, viu a vila crescendo por conta própria e pediu um menu de
+# construção de verdade: ele escolhe O QUE construir e QUANDO, pagando um
+# custo em recurso acumulado (ver `Buildings.BUILD_COST`), e ONDE colocar,
+# clicando no mapa. Isso substitui o desbloqueio automático por nível — o
+# sistema de tiers (`_unlock_building_tier`/`_place_tier2..5_buildings`) foi
+# removido, mas a lógica de "onde é um lugar válido pra esse tipo de
+# prédio" (perto de depósito, perto de água, terreno alto) sobreviveu quase
+# inteira, só migrou de "escolhida automaticamente" pra "validada contra o
+# clique do jogador" — ver `_can_place_kind_at`.
 #
-# "Desbloqueio de prédios" por nível, que o plano do projeto também pede pra
-# esta fase, fica de fora de propósito — todo prédio ainda nasce de uma vez
-# em `_place_starting_buildings`, antes de existir qualquer conceito de
-# nível; gatear isso pediria reescrever a colocação de prédios pra ser
-# progressiva, mudança de arquitetura maior que o resto desta fase (ver o
-# comentário em progression.gd).
+# Progression (progression.gd) continua existindo, mas só pro que já fazia
+# antes do sistema de tiers: alcance de exploração por XP acumulado. Não
+# gate mais nenhum prédio.
+#
+# Armazém, Fazenda e uma Casa continuam nascendo automáticos (ver
+# `_place_starting_buildings`) — é o piso de sobrevivência garantido, sem
+# ele o jogador começaria sem comida e sem WORKAROUND possível (nenhum
+# recurso no Armazém pra pagar o primeiro prédio de qualquer forma).
 #
 # Tudo daqui pra baixo é histórico das fases anteriores, sem mudança de
 # arquitetura — ver a quebra completa em docs/plano-projeto7-reino.md:
@@ -186,12 +195,13 @@ var _last_total_stock := 0.0
 var _is_starving := false   # lido pelo HUD — true no frame em que a comida disponível não cobriu o consumo
 var _village_cell: Vector2i
 var _pending_jobs: Array = []   # ids de Buildings.list esperando trabalhador, -1 = sentinela do carregador
-var _unlocked_level := 0        # até que nível os prédios já foram colocados (ver _maybe_unlock_next_tier)
 var _jobs_registered_up_to := 0 # índice em buildings.list já considerado pra _pending_jobs
 var _nodes_built_up_to := 0     # índice em buildings.list já com Node2D criado
+var _placing_kind := -1         # -1 = não está no modo de construção agora
 var camera: Camera2D
 var _fog_layer: Node2D
 var _water_layer: Node2D
+var _ghost: ColorRect
 var _buildings_root: Node2D
 var _workers_root: Node2D
 var _carriers_root: Node2D
@@ -200,6 +210,8 @@ var _carrier_nodes: Dictionary = {}  # Carrier.id -> Node2D
 var _building_nodes: Dictionary = {} # Buildings.Building -> Node2D
 var _vision_sources: Array = []
 var _stock_label: Label
+var _build_status_label: Label
+var _build_buttons: Dictionary = {}   # Buildings.Kind -> Button
 
 var _town_source_id := -1
 var _dungeon_source_id := -1
@@ -216,7 +228,8 @@ func _ready() -> void:
 
 	_village_cell = Vector2i(MAP_COLS / 2, MAP_ROWS / 2)
 	pathfinder.setup(MAP_COLS, MAP_ROWS, CELL)
-	_unlock_building_tier(1)
+	_place_starting_buildings(_village_cell)
+	pathfinder.rebuild(_solid_cells())
 
 	_build_world()
 	_build_hud()
@@ -229,8 +242,8 @@ func _ready() -> void:
 	# múltiplas vagas por prédio (ver o comentário em buildings.gd).
 	#
 	# Exceções deliberadas: o Armazém e as três fontes de energia (Gerador,
-	# Roda D'Água, Moinho de Vento — Fase 5 e nível 5) nunca têm
-	# trabalhador — são infraestrutura passiva, não produção. E a Oficina de
+	# Roda D'Água, Moinho de Vento) nunca têm trabalhador — são
+	# infraestrutura passiva, não produção. E a Oficina de
 	# Pedra, apesar de PODER ter trabalhador, nasce sem nenhum de propósito:
 	# é o jeito mais direto de mostrar "energia OU trabalhador" de verdade —
 	# ela só produz porque está no raio de uma fonte de energia, não por
@@ -244,9 +257,9 @@ func _ready() -> void:
 	# continuaria sendo infinita e instantânea, e Casa não teria propósito
 	# nenhum no jogo.
 	#
-	# A Fazenda é o único prédio staffável do nível 1 (ver
-	# `_unlock_building_tier`), então `_register_pending_jobs()` já a coloca
-	# sozinha na fila — só falta o carregador (sentinela -1, ver
+	# A Fazenda é o único prédio staffável que nasce automático (ver
+	# `_place_starting_buildings`), então `_register_pending_jobs()` já a
+	# coloca sozinha na fila — só falta o carregador (sentinela -1, ver
 	# `_fill_jobs`) logo atrás dela. Essa ordem importa de verdade:
 	# `Population.BOOTSTRAP_POPULATION` (2) é exatamente gente o bastante pra
 	# cobrir os dois, e são os dois que fecham o ciclo "produzir comida →
@@ -286,37 +299,13 @@ func _fill_jobs() -> void:
 		workers.send_to(worker, _work_spot_for(building), pathfinder)
 		_spawn_worker_node(worker)
 
-# Desbloqueio de prédios por nível: até aqui (fases 0-7 + Mina/Forja +
-# Fazenda), todo prédio nascia de uma vez em `_ready()`, antes de existir
-# qualquer conceito de nível — corte deliberado registrado em
-# progression.gd desde a Fase 7. Agora `Progression.level` (progression.gd)
-# gate a colocação: cada nível chama `_unlock_building_tier` uma vez (ver
-# `_maybe_unlock_next_tier`, chamado todo `_process()`), que planta só os
-# prédios daquele nível e devolve o controle — o resto do jogo (pathfinder,
-# nós da cena, fila de trabalho) já sabe reagir a `buildings.list` crescer
-# a qualquer momento, não só no frame 1.
-#
-# MAX_BUILDING_TIER: nível 5 é o teto de `Progression.REVEAL_RADIUS_BY_LEVEL`
-# — o último nível que existe. Roda D'Água e Moinho de Vento nascem aqui,
-# fechando o catálogo do jogo de vez.
-const MAX_BUILDING_TIER := 5
-
-func _unlock_building_tier(level: int) -> void:
-	match level:
-		1: _place_tier1_buildings(_village_cell)
-		2: _place_tier2_buildings(_village_cell)
-		3: _place_tier3_buildings(_village_cell)
-		4: _place_tier4_buildings(_village_cell)
-		5: _place_tier5_buildings(_village_cell)
-	pathfinder.rebuild(_solid_cells())
-	_unlocked_level = level
-
-# Nível 1 (início de jogo): só o essencial pra sobreviver — o Armazém (é a
-# própria vila), a Fazenda (sem comida a população nunca sai do piso de
-# arranque, ver population.gd) e UMA Casa (capacidade 3, cobre Fazenda +
-# carregador com folga). Nenhum extrator de matéria-prima ainda — a vila
-# começa como um posto de sobrevivência, não uma fábrica.
-func _place_tier1_buildings(start: Vector2i) -> void:
+# Só o essencial pra sobreviver — o Armazém (é a própria vila), a Fazenda
+# (sem comida a população nunca sai do piso de arranque, ver population.gd)
+# e UMA Casa (capacidade 3, cobre Fazenda + carregador com folga). Todo o
+# resto do catálogo (extratores, processadores, energia, mais Casas) é
+# escolha do jogador via menu de construção — ver `_can_place_kind_at`/
+# `_build` mais abaixo.
+func _place_starting_buildings(start: Vector2i) -> void:
 	buildings.place(Buildings.Kind.WAREHOUSE, start)
 	var occupied := _occupied_cells()
 	var farm_cell := _free_cell_near(start, Vector2i(2, 2), occupied)
@@ -325,104 +314,41 @@ func _place_tier1_buildings(start: Vector2i) -> void:
 	var house_cell := _free_cell_near(start, Vector2i(2, 0), occupied)
 	buildings.place(Buildings.Kind.HOUSE, house_cell)
 
-# Nível 2: extração básica de madeira/pedra — Posto de Lenhador e Pedreira
-# buscam em anéis crescentes a célula de depósito mais próxima (ver
-# Buildings.nearest_deposit_cell); uma semente de mapa sem floresta/pedra
-# por perto simplesmente não ganha aquele prédio ainda — não é erro, é o
-# jogo dizendo "explore mais". Segunda Casa: +2 vagas staffáveis precisam de
-# +1 capacidade habitacional (Buildings.HOUSE_CAPACITY) pra não travar a
-# população antes da hora.
-func _place_tier2_buildings(start: Vector2i) -> void:
-	var forest_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.FOREST, start, BUILDING_SEARCH_RADIUS)
-	if forest_cell.x >= 0:
-		buildings.place(Buildings.Kind.LUMBERJACK, forest_cell)
-	var stone_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.STONE, start, BUILDING_SEARCH_RADIUS)
-	if stone_cell.x >= 0:
-		buildings.place(Buildings.Kind.QUARRY, stone_cell)
-	var house_cell := _free_cell_near(start, Vector2i(0, 2), _occupied_cells())
-	buildings.place(Buildings.Kind.HOUSE, house_cell)
+# ---- menu de construção (agência do jogador) ----
 
-# Nível 3: Mina (terceira matéria-prima, mesma técnica de busca em anel
-# sobre `MapGen.Kind.HILLS`) e Serraria (primeiro processador — só faz
-# sentido depois que existe madeira de verdade chegando no Armazém).
-# Terceira Casa pela mesma razão da segunda.
-func _place_tier3_buildings(start: Vector2i) -> void:
-	var ore_cell := Buildings.nearest_deposit_cell(map, MapGen.Kind.HILLS, start, BUILDING_SEARCH_RADIUS)
-	if ore_cell.x >= 0:
-		buildings.place(Buildings.Kind.MINE, ore_cell)
-	var occupied := _occupied_cells()
-	var sawmill_cell := _free_cell_near(start, Vector2i(2, -2), occupied)
-	buildings.place(Buildings.Kind.SAWMILL, sawmill_cell)
-	occupied[sawmill_cell] = true
-	var house_cell := _free_cell_near(start, Vector2i(-2, 2), occupied)
-	buildings.place(Buildings.Kind.HOUSE, house_cell)
-
-# Nível 4: Oficina de Pedra, Gerador a Lenha e Forja. Nenhuma Casa nova
-# aqui — as três já colocadas (capacidade 9) cobrem as 7 vagas staffáveis do
-# jogo inteiro (Fazenda, Lenhador, Pedreira, Mina, Serraria, Forja,
-# carregador — Oficina de Pedra e Gerador não têm trabalhador, ver o
-# comentário em `_ready()`) com folga.
-func _place_tier4_buildings(start: Vector2i) -> void:
-	var occupied := _occupied_cells()
-	var workshop_cell := _free_cell_near(start, Vector2i(-2, -2), occupied)
-	buildings.place(Buildings.Kind.STONE_WORKSHOP, workshop_cell)
-	occupied[workshop_cell] = true
-	# Gerador perto o bastante da Oficina de Pedra pra ela ficar dentro do
-	# raio (Buildings.GENERATOR_RADIUS) e produzir só com energia — ver o
-	# comentário em _ready() sobre por que ela nasce sem trabalhador de
-	# propósito.
-	var generator_cell := _free_cell_near(start, Vector2i(-2, 0), occupied)
-	buildings.place(Buildings.Kind.GENERATOR, generator_cell)
-	occupied[generator_cell] = true
-	var forge_cell := _free_cell_near(start, Vector2i(0, -2), occupied)
-	buildings.place(Buildings.Kind.FORGE, forge_cell)
-
-# Nível 5 (último tier): Roda D'Água e Moinho de Vento, segunda e terceira
-# fonte de energia do plano original — grátis pra operar (ver o comentário
-# em buildings.gd), mas cada uma só nasce se existir um lugar válido perto
-# da vila: Roda D'Água precisa de uma célula de grama com água de verdade
-# do lado (`_cell_near_water`, lê o `WaterSim` de verdade, não um número
-# decorativo), Moinho de Vento precisa de terreno alto o bastante pra
-# "aberto/elevado" significar alguma coisa (`_cell_on_high_ground`, mesmo
-# `map.height_at` que decide onde nasce colina). Sem água ou sem terreno
-# alto perto o bastante, aquele prédio simplesmente não nasce desta vez —
-# mesma regra de "explore mais" dos extratores de depósito.
-func _place_tier5_buildings(start: Vector2i) -> void:
-	var occupied := _occupied_cells()
-	var waterwheel_cell := _cell_near_water(start, occupied)
-	if waterwheel_cell.x >= 0:
-		buildings.place(Buildings.Kind.WATERWHEEL, waterwheel_cell)
-		occupied[waterwheel_cell] = true
-	var windmill_cell := _cell_on_high_ground(start, occupied)
-	if windmill_cell.x >= 0:
-		buildings.place(Buildings.Kind.WINDMILL, windmill_cell)
+# Ordem de exibição no painel — o Armazém fica de fora (nasce fixo com a
+# vila, nunca é escolha do jogador).
+const BUILDABLE_KINDS := [
+	Buildings.Kind.HOUSE, Buildings.Kind.LUMBERJACK, Buildings.Kind.QUARRY, Buildings.Kind.FARM,
+	Buildings.Kind.MINE, Buildings.Kind.SAWMILL, Buildings.Kind.STONE_WORKSHOP,
+	Buildings.Kind.GENERATOR, Buildings.Kind.FORGE, Buildings.Kind.WATERWHEEL, Buildings.Kind.WINDMILL,
+]
+const BUILDING_NAME := {
+	Buildings.Kind.HOUSE: "Casa",
+	Buildings.Kind.LUMBERJACK: "Posto de Lenhador",
+	Buildings.Kind.QUARRY: "Pedreira",
+	Buildings.Kind.FARM: "Fazenda",
+	Buildings.Kind.MINE: "Mina",
+	Buildings.Kind.SAWMILL: "Serraria",
+	Buildings.Kind.STONE_WORKSHOP: "Oficina de Pedra",
+	Buildings.Kind.GENERATOR: "Gerador a Lenha",
+	Buildings.Kind.FORGE: "Forja",
+	Buildings.Kind.WATERWHEEL: "Roda D'Água",
+	Buildings.Kind.WINDMILL: "Moinho de Vento",
+}
 
 # Profundidade mínima de água numa célula vizinha pra contar como "rio/lago
 # ao lado" — bem acima do limiar visual de desenho (`WATER_VISIBLE_MIN`),
-# pra não colocar a Roda D'Água ao lado de uma poça residual quase seca.
+# pra não deixar construir Roda D'Água ao lado de uma poça residual quase
+# seca.
 const WATERWHEEL_MIN_ADJACENT_WATER := 0.2
 # Mesmo limiar de altura que decide onde nasce colina (`MapGen.HILLS_HEIGHT`)
 # NÃO serve aqui: qualquer célula acima dele já virou Kind.HILLS, nunca
 # GRASS. "Elevado o bastante pra vento, mas ainda não é colina" pede um
 # limiar mais baixo — medido rodando o mapa de verdade (a maioria da grama
 # fica entre 2 e 4 de altura, ver map_gen.gd): 3.0 acha terreno genuinamente
-# alto sem ficar tão raro que o Moinho quase nunca nasça.
+# alto sem ficar tão raro que o Moinho quase nunca dê pra construir.
 const WINDMILL_MIN_HEIGHT := 3.0
-
-func _cell_near_water(start: Vector2i, occupied: Dictionary) -> Vector2i:
-	for radius in range(0, BUILDING_SEARCH_RADIUS + 1):
-		for dx in range(-radius, radius + 1):
-			for dy in range(-radius, radius + 1):
-				if maxi(absi(dx), absi(dy)) != radius:
-					continue
-				var cell := start + Vector2i(dx, dy)
-				if not map.inside(cell.x, cell.y) or occupied.has(cell):
-					continue
-				if map.kind_at(cell.x, cell.y) != MapGen.Kind.GRASS:
-					continue
-				if _has_adjacent_water(cell):
-					return cell
-	return Vector2i(-1, -1)
 
 func _has_adjacent_water(cell: Vector2i) -> bool:
 	var offsets: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
@@ -432,20 +358,49 @@ func _has_adjacent_water(cell: Vector2i) -> bool:
 			return true
 	return false
 
-func _cell_on_high_ground(start: Vector2i, occupied: Dictionary) -> Vector2i:
-	for radius in range(0, BUILDING_SEARCH_RADIUS + 1):
-		for dx in range(-radius, radius + 1):
-			for dy in range(-radius, radius + 1):
-				if maxi(absi(dx), absi(dy)) != radius:
-					continue
-				var cell := start + Vector2i(dx, dy)
-				if not map.inside(cell.x, cell.y) or occupied.has(cell):
-					continue
-				if map.kind_at(cell.x, cell.y) != MapGen.Kind.GRASS:
-					continue
-				if map.height_at(cell.x, cell.y) >= WINDMILL_MIN_HEIGHT:
-					return cell
-	return Vector2i(-1, -1)
+# Regra de posição por tipo — a mesma lógica que antes decidia sozinha ONDE
+# plantar cada prédio (depósito certo, água do lado, terreno alto) agora só
+# VALIDA a célula que o jogador clicou. Não checa custo nem se a célula já
+# está ocupada — isso é `_build()`.
+func _can_place_kind_at(kind: int, cell: Vector2i) -> bool:
+	if not map.inside(cell.x, cell.y):
+		return false
+	if not fog.is_explored(cell.x, cell.y):
+		return false
+	match kind:
+		Buildings.Kind.LUMBERJACK:
+			return map.kind_at(cell.x, cell.y) == MapGen.Kind.FOREST
+		Buildings.Kind.QUARRY:
+			return map.kind_at(cell.x, cell.y) == MapGen.Kind.STONE
+		Buildings.Kind.MINE:
+			return map.kind_at(cell.x, cell.y) == MapGen.Kind.HILLS
+		Buildings.Kind.WATERWHEEL:
+			return map.kind_at(cell.x, cell.y) == MapGen.Kind.GRASS and _has_adjacent_water(cell)
+		Buildings.Kind.WINDMILL:
+			return map.kind_at(cell.x, cell.y) == MapGen.Kind.GRASS and map.height_at(cell.x, cell.y) >= WINDMILL_MIN_HEIGHT
+		_:
+			return map.kind_at(cell.x, cell.y) == MapGen.Kind.GRASS
+
+# Tenta construir `kind` em `cell`: precisa passar em `_can_place_kind_at` E
+# a célula não pode já ter outro prédio E o Armazém precisa ter estoque
+# pro custo (`Buildings.BUILD_COST`). Devolve false sem mudar nada se
+# qualquer uma falhar — quem chama (o clique do jogador, ou um teste) decide
+# o que fazer com isso. Sucesso paga o custo, planta o prédio, atualiza
+# pathfinder/fila de trabalho/nó da cena — os mesmos passos que antes
+# aconteciam automático a cada nível, agora disparados por uma decisão.
+func _build(kind: int, cell: Vector2i) -> bool:
+	if _occupied_cells().has(cell):
+		return false
+	if not _can_place_kind_at(kind, cell):
+		return false
+	if not buildings.can_afford(kind):
+		return false
+	buildings.pay_cost(kind)
+	buildings.place(kind, cell)
+	pathfinder.rebuild(_solid_cells())
+	_register_pending_jobs()
+	_sync_new_building_nodes()
+	return true
 
 func _occupied_cells() -> Dictionary:
 	var occupied := {}
@@ -459,11 +414,11 @@ func _solid_cells() -> Array:
 		solids.append(building.cell)
 	return solids
 
-# Chamada uma vez por prédio novo (inicial ou desbloqueado depois) — separa
-# "quem precisa de trabalhador" de "quem é infraestrutura passiva", mesma
-# regra desde a Fase 5/6. Usa `_jobs_registered_up_to` pra nunca reconsiderar
-# um prédio já enfileirado, já que `buildings.list` só cresce (nunca reordena
-# nem remove).
+# Chamada uma vez por prédio novo (inicial ou construído pelo jogador
+# depois) — separa "quem precisa de trabalhador" de "quem é infraestrutura
+# passiva", mesma regra desde a Fase 5/6. Usa `_jobs_registered_up_to` pra
+# nunca reconsiderar um prédio já enfileirado, já que `buildings.list` só
+# cresce (nunca reordena nem remove).
 func _register_pending_jobs() -> void:
 	while _jobs_registered_up_to < buildings.list.size():
 		var i := _jobs_registered_up_to
@@ -476,20 +431,6 @@ func _register_pending_jobs() -> void:
 		if building.kind == Buildings.Kind.WATERWHEEL or building.kind == Buildings.Kind.WINDMILL:
 			continue
 		_pending_jobs.append(i)
-
-# Chamada todo `_process()`: assim que a vila sobe de nível o bastante pra
-# desbloquear o próximo tier, planta os prédios daquele nível, refaz o
-# pathfinder (novos prédios são sólidos) e coloca os novos nós na cena — a
-# mesma sincronização que `_build_world()` fez uma vez no frame 1, agora
-# repetível. Nada acontece depois de `MAX_BUILDING_TIER` (nível 5): a partir
-# daí, subir de nível só amplia o alcance de exploração
-# (`_advance_progression`), o catálogo de prédios já fechou.
-func _maybe_unlock_next_tier() -> void:
-	if _unlocked_level >= MAX_BUILDING_TIER or progression.level <= _unlocked_level:
-		return
-	_unlock_building_tier(_unlocked_level + 1)
-	_register_pending_jobs()
-	_sync_new_building_nodes()
 
 # Busca em anéis crescentes a partir de `start + offset` — mesma técnica de
 # `Buildings.nearest_deposit_cell`, mas contra um conjunto de células já
@@ -558,12 +499,12 @@ func _process(delta: float) -> void:
 	buildings.advance(delta, map, workers)
 	carriers.advance(delta, pathfinder, buildings)
 	_advance_progression()
-	_maybe_unlock_next_tier()
 	pathfinder.decay(delta)
 	_sync_building_nodes()
 	_sync_worker_nodes()
 	_sync_carrier_nodes()
 	_update_hud()
+	_update_ghost()
 	_pan_with_keys(delta)
 
 # XP é o total de recurso já entregue no Armazém — soma de todo `stock`,
@@ -613,10 +554,23 @@ func _pan_with_keys(delta: float) -> void:
 		camera.position.x = clampf(camera.position.x, camera.limit_left, camera.limit_right)
 		camera.position.y = clampf(camera.position.y, camera.limit_top, camera.limit_bottom)
 
+# Clique esquerdo faz coisas diferentes dependendo do modo: fora do modo de
+# construção, continua explorando a névoa (comportamento original desde a
+# Fase 1). No modo de construção (`_placing_kind != -1`, ligado pelo botão
+# do painel), o clique tenta construir ali — Esc ou botão direito cancelam
+# sem gastar nada.
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE and _placing_kind != -1:
+		_cancel_placing()
+		return
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_scout_at(get_global_mouse_position())
+			if _placing_kind != -1:
+				_try_build_at_mouse()
+			else:
+				_scout_at(get_global_mouse_position())
+		elif event.button_index == MOUSE_BUTTON_RIGHT and _placing_kind != -1:
+			_cancel_placing()
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom_by(ZOOM_STEP)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
@@ -625,6 +579,41 @@ func _unhandled_input(event: InputEvent) -> void:
 func _zoom_by(factor: float) -> void:
 	var z: float = clampf(camera.zoom.x * factor, ZOOM_MIN, ZOOM_MAX)
 	camera.zoom = Vector2(z, z)
+
+func _cell_under_mouse() -> Vector2i:
+	var world_pos := get_global_mouse_position()
+	return Vector2i(floor(world_pos.x / CELL), floor(world_pos.y / CELL))
+
+func _on_build_button_pressed(kind: int) -> void:
+	if not buildings.can_afford(kind):
+		return
+	_placing_kind = kind
+	_build_status_label.text = "Construindo %s — clique num local válido (Esc cancela)" % BUILDING_NAME[kind]
+
+func _cancel_placing() -> void:
+	_placing_kind = -1
+	_build_status_label.text = ""
+
+func _try_build_at_mouse() -> void:
+	var kind := _placing_kind
+	if _build(kind, _cell_under_mouse()):
+		_cancel_placing()
+	# Clique inválido (célula errada, sem estoque) não sai do modo — o
+	# jogador tenta de novo sem precisar reabrir o painel. O quadrado
+	# vermelho (`_update_ghost`) já avisa antes do clique.
+
+# Quadrado colorido seguindo o mouse enquanto o jogador está escolhendo
+# onde construir — verde numa célula válida, vermelho numa inválida. Sem
+# isso, "clique num local válido" seria adivinhação.
+func _update_ghost() -> void:
+	if _placing_kind == -1:
+		_ghost.visible = false
+		return
+	var cell := _cell_under_mouse()
+	_ghost.visible = true
+	_ghost.position = Vector2(cell) * CELL
+	var valid := _can_place_kind_at(_placing_kind, cell) and not _occupied_cells().has(cell)
+	_ghost.color = Color(0.3, 1.0, 0.3, 0.45) if valid else Color(1.0, 0.3, 0.3, 0.45)
 
 # Clique no mapa simula um posto de observação/exploração: soma uma fonte de
 # visão permanente naquele ponto. Não existe unidade se deslocando ainda (Fase
@@ -723,6 +712,15 @@ func _build_world() -> void:
 	_fog_layer.draw.connect(_draw_fog)
 	world.add_child(_fog_layer)
 
+	# Quadrado-fantasma do modo de construção — nasce invisível, `_update_ghost`
+	# liga/desliga e pinta verde/vermelho a cada frame.
+	_ghost = ColorRect.new()
+	_ghost.name = "Ghost"
+	_ghost.size = Vector2(CELL, CELL)
+	_ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ghost.visible = false
+	world.add_child(_ghost)
+
 	camera = Camera2D.new()
 	camera.name = "Camera2D"
 	camera.limit_left = 0
@@ -757,7 +755,7 @@ func _build_hud() -> void:
 
 	var label := Label.new()
 	label.name = "Instructions"
-	label.text = "Reino em Construção\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar"
+	label.text = "Reino em Construção\nWASD/setas: mover câmera · roda do mouse: zoom · clique: explorar/construir"
 	label.position = Vector2(16, 12)
 	if UITheme and UITheme.theme:
 		label.theme = UITheme.theme
@@ -769,7 +767,54 @@ func _build_hud() -> void:
 	if UITheme and UITheme.theme:
 		_stock_label.theme = UITheme.theme
 	canvas.add_child(_stock_label)
+
+	_build_status_label = Label.new()
+	_build_status_label.name = "BuildStatus"
+	_build_status_label.position = Vector2(16, 150)
+	if UITheme and UITheme.theme:
+		_build_status_label.theme = UITheme.theme
+	canvas.add_child(_build_status_label)
+
+	_build_construction_panel(canvas)
 	_update_hud()
+
+# Painel de construção: um botão por tipo (ver `BUILDABLE_KINDS`), mostrando
+# nome e custo. Clicar arma o modo de construção (`_on_build_button_pressed`);
+# o botão fica desabilitado quando o Armazém não tem estoque pro custo (ver
+# `_update_hud`, que reavalia isso todo frame). Ancorado no canto superior
+# direito com posição fixa — o viewport do projeto é sempre 1280x720 (ver
+# project.godot), não precisa reagir a resize.
+const BUILD_PANEL_WIDTH := 260.0
+
+func _build_construction_panel(canvas: CanvasLayer) -> void:
+	var panel := VBoxContainer.new()
+	panel.name = "BuildPanel"
+	panel.position = Vector2(1280.0 - BUILD_PANEL_WIDTH - 16, 16)
+	canvas.add_child(panel)
+
+	var title := Label.new()
+	title.text = "Construir:"
+	if UITheme and UITheme.theme:
+		title.theme = UITheme.theme
+	panel.add_child(title)
+
+	for kind in BUILDABLE_KINDS:
+		var button := Button.new()
+		button.name = "Build_%d" % kind
+		button.custom_minimum_size = Vector2(BUILD_PANEL_WIDTH, 0)
+		button.text = _build_button_text(kind)
+		if UITheme and UITheme.theme:
+			button.theme = UITheme.theme
+		button.pressed.connect(_on_build_button_pressed.bind(kind))
+		panel.add_child(button)
+		_build_buttons[kind] = button
+
+func _build_button_text(kind: int) -> String:
+	var cost: Dictionary = Buildings.BUILD_COST.get(kind, {})
+	var parts: Array = []
+	for resource in cost:
+		parts.append("%s %.0f" % [resource, cost[resource]])
+	return "%s (%s)" % [BUILDING_NAME[kind], ", ".join(parts)]
 
 func _update_hud() -> void:
 	if _stock_label == null:
@@ -780,6 +825,8 @@ func _update_hud() -> void:
 		int(population.count), buildings.housing_capacity(), population.employed(), " — faminta!" if _is_starving else "",
 		progression.level, progression.xp, Progression.XP_PER_LEVEL, int(progression.reveal_radius()),
 	]
+	for kind in _build_buttons:
+		_build_buttons[kind].disabled = not buildings.can_afford(kind)
 
 # ---- Fase 2: prédios e trabalhador ----
 
@@ -832,9 +879,9 @@ func _make_building_node(building: Buildings.Building) -> Node2D:
 	return node
 
 # Cria o Node2D de todo prédio ainda sem um — no frame 1 (`_build_world`)
-# isso cobre o tier 1 inteiro; a cada desbloqueio de nível
-# (`_maybe_unlock_next_tier`) cobre só os prédios novos daquele tier.
-# `_nodes_built_up_to` evita recriar o nó de um prédio que já tem um.
+# isso cobre os três prédios iniciais; a cada construção manual do jogador
+# (`_build`) cobre só o prédio novo. `_nodes_built_up_to` evita recriar o nó
+# de um prédio que já tem um.
 func _sync_new_building_nodes() -> void:
 	while _nodes_built_up_to < buildings.list.size():
 		var building := buildings.list[_nodes_built_up_to]

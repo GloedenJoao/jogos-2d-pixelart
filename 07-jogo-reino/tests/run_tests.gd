@@ -111,7 +111,9 @@ func _initialize() -> void:
 	await _test_scene_camera_limits_to_map_size()
 	await _test_scene_click_reveals_fog()
 	await _test_scene_pan_moves_camera_within_limits()
-	await _test_scene_buildings_unlock_progressively()
+	await _test_scene_manual_construction_costs_and_places()
+	await _test_scene_cannot_build_on_unexplored_fog()
+	await _test_scene_build_mode_can_be_cancelled()
 	await _test_scene_worker_arrives_and_produces()
 	await _test_scene_population_grows_up_to_three_houses()
 	await _test_scene_progression_grows_reveal_radius()
@@ -1154,17 +1156,36 @@ func _boot_main() -> Node:
 	root.add_child(main)
 	return main
 
-# Prédios agora nascem por nível (ver `_maybe_unlock_next_tier` em main.gd),
-# não todos de uma vez no frame 1 — vários testes de cena precisam de um
-# tier específico já desbloqueado antes de procurar um prédio por Kind.
-# Devolve o número de passos usados, pra quem chama poder mostrar isso numa
-# mensagem de falha.
-func _advance_to_tier(main: Node, tier: int, max_steps: int) -> int:
-	var steps := 0
-	while steps < max_steps and main._unlocked_level < tier:
-		main._process(1.0 / 30.0)
-		steps += 1
-	return steps
+# Construção agora é escolha do jogador (`main._build`), não mais
+# automática por nível — vários testes de cena precisam simular "o jogador
+# decidiu construir X" sem depender de clique de mouse de verdade, do mesmo
+# jeito que `_scout_at` já é chamado direto em vez de simular clique.
+#
+# `_reveal_everything` ignora a névoa de guerra (`_can_place_kind_at` exige
+# célula explorada) — testes que não são sobre exploração em si não deviam
+# também precisar simular exploração só pra conseguir construir.
+func _reveal_everything(main: Node) -> void:
+	main.fog.explored.fill(1)
+
+# Estoque de sobra pra nenhum teste falhar por falta de recurso quando o que
+# está sendo testado é outra coisa (posição, fila de trabalho, produção).
+func _give_plenty_of_stock(main: Node) -> void:
+	for resource in main.buildings.stock:
+		main.buildings.stock[resource] = 99999.0
+
+# Busca em quadrado ao redor de `center` a primeira célula onde `main._build`
+# funciona de verdade — mesmo caminho que um clique do jogador usaria
+# (`_can_place_kind_at` + custo + `Buildings.place`), só sem precisar de
+# mouse. Devolve a célula construída, ou Vector2i(-1,-1) se nenhuma dentro
+# do raio serviu (depósito/água/terreno alto podem não existir perto o
+# bastante nesta semente — mesma regra de "explore mais" de sempre).
+func _build_near(main: Node, kind: int, center: Vector2i, radius: int) -> Vector2i:
+	for dx in range(-radius, radius + 1):
+		for dy in range(-radius, radius + 1):
+			var cell: Vector2i = center + Vector2i(dx, dy)
+			if main._build(kind, cell):
+				return cell
+	return Vector2i(-1, -1)
 
 func _test_scene_boots() -> void:
 	var main := _boot_main()
@@ -1245,52 +1266,70 @@ func _test_scene_pan_moves_camera_within_limits() -> void:
 	main.queue_free()
 	await process_frame
 
-# Testa o mecanismo de desbloqueio por nível em si (`_unlock_building_tier`
-# em main.gd): cada tier acrescenta prédios específicos e nunca planta os de
-# um tier ainda não alcançado. Só verifica os prédios que NÃO dependem de
-# depósito (sempre nascem, qualquer semente) — Posto de Lenhador/Pedreira/
-# Mina ficam de fora daqui de propósito, já cobertos por outros testes que
-# lidam com a semente não ter o depósito por perto.
-func _test_scene_buildings_unlock_progressively() -> void:
+# Testa o mecanismo de construção manual em si (`main._build`): sem
+# estoque, sem posição válida ou em cima de outro prédio, nada acontece; com
+# os três, o prédio nasce e o custo sai do Armazém de verdade.
+func _test_scene_manual_construction_costs_and_places() -> void:
 	var main := _boot_main()
 	await process_frame
-	_check(main._unlocked_level == 1, "a vila nasce já no tier 1")
-	var kinds1: Array = main.buildings.list.map(func(b): return b.kind)
-	_check(Buildings.Kind.WAREHOUSE in kinds1 and Buildings.Kind.FARM in kinds1 and Buildings.Kind.HOUSE in kinds1, "tier 1 tem Armazém, Fazenda e uma Casa")
-	_check(not (Buildings.Kind.SAWMILL in kinds1) and not (Buildings.Kind.FORGE in kinds1), "prédios de tiers mais altos ainda não existem no tier 1")
+	_reveal_everything(main)
 
-	var s2 := _advance_to_tier(main, 2, 40000)
-	_check(main._unlocked_level >= 2, "sobe pro tier 2 dentro de um teto razoável (%d passos)" % s2)
-	var kinds2: Array = main.buildings.list.map(func(b): return b.kind)
-	_check(kinds2.count(Buildings.Kind.HOUSE) == 2, "tier 2 acrescenta a segunda Casa")
-	_check(not (Buildings.Kind.SAWMILL in kinds2), "Serraria continua fora até o tier 3")
+	var house_cost: float = Buildings.BUILD_COST[Buildings.Kind.HOUSE]["comida"]
+	var houses_before: int = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE).size()
+	var free_cell: Vector2i = main._village_cell + Vector2i(4, 4)
+	_check(main.map.kind_at(free_cell.x, free_cell.y) == MapGen.Kind.GRASS, "a célula de teste é grama livre — pré-condição do teste, não a regra sendo testada")
 
-	var s3 := _advance_to_tier(main, 3, 40000)
-	var kinds3: Array = main.buildings.list.map(func(b): return b.kind)
-	_check(Buildings.Kind.SAWMILL in kinds3, "tier 3 acrescenta a Serraria (%d passos)" % s3)
-	_check(kinds3.count(Buildings.Kind.HOUSE) == 3, "tier 3 acrescenta a terceira Casa")
-	_check(not (Buildings.Kind.FORGE in kinds3) and not (Buildings.Kind.STONE_WORKSHOP in kinds3), "Forja e Oficina de Pedra continuam fora até o tier 4")
+	main.buildings.stock["comida"] = house_cost - 1.0
+	_check(not main._build(Buildings.Kind.HOUSE, free_cell), "sem comida suficiente, construir falha")
+	_check(main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE).size() == houses_before, "tentativa sem sucesso não planta nada")
 
-	var s4 := _advance_to_tier(main, 4, 40000)
-	var kinds4: Array = main.buildings.list.map(func(b): return b.kind)
-	_check(Buildings.Kind.STONE_WORKSHOP in kinds4 and Buildings.Kind.GENERATOR in kinds4 and Buildings.Kind.FORGE in kinds4, "tier 4 acrescenta Oficina de Pedra, Gerador e Forja (%d passos)" % s4)
-	_check(not (Buildings.Kind.WATERWHEEL in kinds4) and not (Buildings.Kind.WINDMILL in kinds4), "Roda D'Água e Moinho de Vento continuam fora até o tier 5 (o último)")
+	main.buildings.stock["comida"] = house_cost + 50.0
+	var stock_before: float = main.buildings.stock["comida"]
+	_check(main._build(Buildings.Kind.HOUSE, free_cell), "com comida suficiente e célula válida, construir funciona")
+	_near(main.buildings.stock["comida"], stock_before - house_cost, 0.0001, "o custo saiu do Armazém de verdade, nem a mais nem a menos")
+	_check(main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE).size() == houses_before + 1, "a Casa nova está na lista")
 
-	# Roda D'Água/Moinho de Vento só nascem se existir célula válida perto
-	# da vila (água de verdade ao lado / terreno alto o bastante) — mesma
-	# regra de "explore mais" dos extratores de depósito, então não são uma
-	# garantia como os prédios anteriores.
-	var s5 := _advance_to_tier(main, 5, 40000)
-	_check(main._unlocked_level >= 5, "sobe pro tier 5 (o último) dentro de um teto razoável (%d passos)" % s5)
+	_check(not main._build(Buildings.Kind.HOUSE, free_cell), "não dá pra construir em cima de um prédio que já está lá")
 
-	# Depois do último tier, subir de nível continua acontecendo (o alcance
-	# de exploração ainda cresce, ver progression.gd), mas nenhum prédio
-	# novo aparece — MAX_BUILDING_TIER é um teto de verdade, não só um
-	# número que nunca é alcançado na prática.
-	var buildings_before: int = main.buildings.list.size()
-	for _i in 6000:
-		main._process(1.0 / 30.0)
-	_check(main.buildings.list.size() == buildings_before, "depois do tier 5, subir de nível não planta prédio novo nenhum (%d prédios antes e depois)" % buildings_before)
+	var forest_cell := Buildings.nearest_deposit_cell(main.map, MapGen.Kind.FOREST, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	if forest_cell.x >= 0:
+		main.buildings.stock["comida"] = 99999.0
+		_check(not main._build(Buildings.Kind.LUMBERJACK, main._village_cell), "Posto de Lenhador não nasce em grama — precisa de floresta de verdade")
+		_check(main._build(Buildings.Kind.LUMBERJACK, forest_cell), "Posto de Lenhador nasce em cima da floresta")
+
+	main.queue_free()
+	await process_frame
+
+# Névoa de guerra continua valendo pra construção: célula nunca explorada
+# não é um lugar válido, mesmo com estoque de sobra e terreno certo.
+func _test_scene_cannot_build_on_unexplored_fog() -> void:
+	var main := _boot_main()
+	await process_frame
+	_give_plenty_of_stock(main)
+	var far_cell: Vector2i = Vector2i(2, 2)
+	_check(not main.fog.is_explored(far_cell.x, far_cell.y), "a célula de teste realmente não foi explorada ainda — pré-condição")
+	_check(not main._build(Buildings.Kind.HOUSE, far_cell), "não dá pra construir em névoa nunca vista, mesmo com estoque de sobra")
+	main._scout_at(Vector2(far_cell) * float(main.CELL))
+	_check(main._build(Buildings.Kind.HOUSE, far_cell), "depois de explorar aquele ponto, a mesma célula já aceita construção")
+	main.queue_free()
+	await process_frame
+
+# O quadrado-fantasma (`_update_ghost`) e o cancelamento do modo de
+# construção (`Esc`/botão direito) são a parte mais "de jogador" do
+# mecanismo — sem mouse simulado, mas testando o mesmo estado que o clique
+# de verdade usaria.
+func _test_scene_build_mode_can_be_cancelled() -> void:
+	var main := _boot_main()
+	await process_frame
+	_check(main._placing_kind == -1, "fora do modo de construção, no início")
+
+	main.buildings.stock["comida"] = 99999.0
+	main._on_build_button_pressed(Buildings.Kind.HOUSE)
+	_check(main._placing_kind == Buildings.Kind.HOUSE, "apertar o botão de construir arma o modo de construção")
+
+	main._cancel_placing()
+	_check(main._placing_kind == -1, "cancelar sai do modo de construção")
+	_check(main._build_status_label.text == "", "cancelar limpa o texto de status")
 
 	main.queue_free()
 	await process_frame
@@ -1306,21 +1345,44 @@ func _test_scene_worker_arrives_and_produces() -> void:
 	# trabalhador" (ver o comentário em main.gd _ready()).
 	var unstaffed_kinds := [Buildings.Kind.WAREHOUSE, Buildings.Kind.GENERATOR, Buildings.Kind.STONE_WORKSHOP, Buildings.Kind.HOUSE, Buildings.Kind.WATERWHEEL, Buildings.Kind.WINDMILL]
 
-	# Fase 6: mão de obra não é mais instantânea — a população começa em
-	# zero, então no primeiro frame ninguém tem trabalhador ainda nenhum. No
-	# tier 1 (o único que já existe agora) isso vale só pra Fazenda.
+	# Mão de obra não é instantânea — a população começa em zero, então no
+	# primeiro frame ninguém tem trabalhador ainda nenhum. Só a Fazenda e
+	# uma Casa existem neste momento (ver `_place_starting_buildings`).
 	_check(main.workers.list.is_empty(), "no primeiro frame ainda não há trabalhador nenhum — população começa em zero")
 	for building in main.buildings.list:
 		if building.kind in unstaffed_kinds:
 			continue
 		_check(building.worker_id == -1, "prédio staffável espera na fila até a população crescer o bastante")
 
-	# Prédios continuam aparecendo por vários níveis (ver
-	# `_unlock_building_tier`) — só depois do último tier dá pra saber o
-	# conjunto FINAL de prédios staffáveis do jogo e testar todos de uma vez.
-	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
+	# Constrói manualmente o resto do catálogo (simula o jogador clicando no
+	# painel) — o resto do teste precisa do conjunto COMPLETO de prédios
+	# staffáveis pra valer a pena. Depósito-dependentes (Lenhador/Pedreira/
+	# Mina) podem não achar terreno nesta semente; segue com o que der, mesma
+	# regra de "explore mais" de sempre.
+	_reveal_everything(main)
+	_give_plenty_of_stock(main)
+	var forest_cell := Buildings.nearest_deposit_cell(main.map, MapGen.Kind.FOREST, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	if forest_cell.x >= 0:
+		main._build(Buildings.Kind.LUMBERJACK, forest_cell)
+	var stone_cell := Buildings.nearest_deposit_cell(main.map, MapGen.Kind.STONE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	if stone_cell.x >= 0:
+		main._build(Buildings.Kind.QUARRY, stone_cell)
+	var ore_cell := Buildings.nearest_deposit_cell(main.map, MapGen.Kind.HILLS, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	if ore_cell.x >= 0:
+		main._build(Buildings.Kind.MINE, ore_cell)
+	_build_near(main, Buildings.Kind.SAWMILL, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_build_near(main, Buildings.Kind.STONE_WORKSHOP, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_build_near(main, Buildings.Kind.GENERATOR, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_build_near(main, Buildings.Kind.FORGE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	# Até 6 prédios staffáveis + carregador podem existir agora — uma Casa só
+	# (capacidade 3) não cobre isso; constrói mais duas pra ninguém ficar sem
+	# trabalhador por falta de população, não por falha do mecanismo sendo
+	# testado.
+	_build_near(main, Buildings.Kind.HOUSE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_build_near(main, Buildings.Kind.HOUSE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+
 	var staffable: Array = main.buildings.list.filter(func(b): return not (b.kind in unstaffed_kinds))
-	_check(staffable.size() >= 1, "a vila termina com pelo menos um prédio staffável (%d passos até o último tier)" % unlock_steps)
+	_check(staffable.size() >= 1, "a vila termina com pelo menos um prédio staffável depois da rodada de construção")
 
 	var workshop_matches: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
 
@@ -1369,17 +1431,15 @@ func _test_scene_population_grows_up_to_three_houses() -> void:
 	# esse frame já chama _process() com o delta real do motor.
 	_check(main.population.count < 1.0, "população praticamente não cresceu ainda logo após instanciar (%.3f)" % main.population.count)
 	var houses_at_start: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE)
-	_check(houses_at_start.size() == 1, "a vila nasce com só UMA casa — as outras duas vêm com os níveis 2 e 3 (ver _unlock_building_tier)")
+	_check(houses_at_start.size() == 1, "a vila nasce com só UMA casa — o resto é decisão do jogador (menu de construção)")
 
-	# Prédios (inclusive Casa) só terminam de aparecer quando a vila sobe até
-	# o último tier — ver o comentário em `_advance_to_tier`.
-	var steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
+	_reveal_everything(main)
+	_give_plenty_of_stock(main)
+	var house_b := _build_near(main, Buildings.Kind.HOUSE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	var house_c := _build_near(main, Buildings.Kind.HOUSE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_check(house_b.x >= 0 and house_c.x >= 0, "dá pra construir mais duas casas perto da vila")
 	var houses: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.HOUSE)
-	# Três casas, não duas: a Fazenda é o sexto prédio staffável, e junto com
-	# o carregador soma 7 vagas — duas casas (capacidade 6) já não cobririam
-	# nem as vagas, quanto mais deixar folga (ver o comentário em
-	# _place_tier4_buildings).
-	_check(houses.size() == 3, "com tempo suficiente, a vila termina com três casas (%d passos)" % steps)
+	_check(houses.size() == 3, "com as duas construídas pelo jogador, a vila tem três casas")
 	_check(main.buildings.housing_capacity() == Buildings.HOUSE_CAPACITY * 3, "a capacidade bate com o número de casas")
 
 	for _i in 6000:
@@ -1445,16 +1505,42 @@ func _test_scene_carrier_delivers_to_warehouse() -> void:
 func _test_scene_processing_chain_produces_tabua_and_bloco() -> void:
 	var main := _boot_main()
 	await process_frame
-	# Serraria só existe a partir do tier 3, Oficina de Pedra só do tier 4
-	# (ver `_unlock_building_tier` em main.gd) — a cadeia inteira precisa da
-	# vila já no último tier antes de sequer procurar os dois prédios.
-	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
+	# Serraria/Oficina de Pedra/Gerador são decisão do jogador agora — mas
+	# construir os três com estoque pré-carregado quebraria o próprio teste
+	# (tábua/bloco sairiam do estoque semeado, não da cadeia extração →
+	# transporte → processamento que este teste existe pra provar). Por
+	# isso só a comida do Lenhador/Pedreira vem de graça — madeira/pedra
+	# precisam chegar de verdade pelo carregador antes dos processadores
+	# poderem ser pagos.
+	_reveal_everything(main)
+	var forest_cell := Buildings.nearest_deposit_cell(main.map, MapGen.Kind.FOREST, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	var stone_cell := Buildings.nearest_deposit_cell(main.map, MapGen.Kind.STONE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_check(forest_cell.x >= 0 and stone_cell.x >= 0, "a semente de teste tem floresta e pedra perto da vila")
+	main.buildings.stock["comida"] = 99999.0
+	main._build(Buildings.Kind.LUMBERJACK, forest_cell)
+	main._build(Buildings.Kind.QUARRY, stone_cell)
+	# Farm + Lenhador + Pedreira + carregador = 4 vagas — uma Casa só
+	# (capacidade 3) deixaria uma delas sem gente pra sempre, por falta de
+	# população, não por falha da cadeia sendo testada.
+	_build_near(main, Buildings.Kind.HOUSE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+
+	var needed_madeira: float = Buildings.BUILD_COST[Buildings.Kind.SAWMILL]["madeira"] + Buildings.BUILD_COST[Buildings.Kind.GENERATOR]["madeira"]
+	var needed_pedra: float = Buildings.BUILD_COST[Buildings.Kind.STONE_WORKSHOP]["pedra"]
+	var steps := 0
+	while steps < 10000 and (main.buildings.stock.get("madeira", 0.0) < needed_madeira or main.buildings.stock.get("pedra", 0.0) < needed_pedra):
+		main._process(1.0 / 30.0)
+		steps += 1
+	_check(main.buildings.stock.get("madeira", 0.0) >= needed_madeira and main.buildings.stock.get("pedra", 0.0) >= needed_pedra, "madeira/pedra chegam de verdade pelo carregador, o bastante pra pagar os processadores (%d passos)" % steps)
+
+	_build_near(main, Buildings.Kind.SAWMILL, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_build_near(main, Buildings.Kind.STONE_WORKSHOP, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_build_near(main, Buildings.Kind.GENERATOR, main._village_cell, main.BUILDING_SEARCH_RADIUS)
 	var sawmill: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.SAWMILL)
 	var workshop: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.STONE_WORKSHOP)
-	_check(sawmill.size() == 1 and workshop.size() == 1, "a vila termina com Serraria e Oficina de Pedra (%d passos até o último tier)" % unlock_steps)
+	_check(sawmill.size() == 1 and workshop.size() == 1, "a Serraria e a Oficina de Pedra foram construídas")
 	_check(workshop[0].worker_id == -1, "a Oficina de Pedra continua sem trabalhador durante todo o teste")
 
-	var steps := 0
+	steps = 0
 	var got_tabua := false
 	var got_bloco := false
 	var was_powered := false
@@ -1478,20 +1564,31 @@ func _test_scene_processing_chain_produces_tabua_and_bloco() -> void:
 func _test_scene_ore_chain_produces_lingote() -> void:
 	var main := _boot_main()
 	await process_frame
-	# Mina só existe a partir do tier 3, Forja só do tier 4 (ver
-	# `_unlock_building_tier` em main.gd).
-	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
-	var mine: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.MINE)
-	var forge: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.FORGE)
-	_check(forge.size() == 1, "a vila termina com a Forja (%d passos até o último tier)" % unlock_steps)
-	if mine.is_empty():
-		# A semente de teste fixa (9001, via _boot_main) pode não ter colina
-		# dentro do raio de busca — mesma regra de "explore mais" das outras
-		# duas cadeias. Sem Mina, não tem como a Forja receber minério; nada
-		# mais deste teste é verificável.
+	_reveal_everything(main)
+	var ore_cell := Buildings.nearest_deposit_cell(main.map, MapGen.Kind.HILLS, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	if ore_cell.x < 0:
+		# A semente de teste fixa pode não ter colina dentro do raio de
+		# busca — mesma regra de "explore mais" das outras cadeias. Sem
+		# Mina, não tem como a Forja receber minério; nada mais deste teste
+		# é verificável.
 		main.queue_free()
 		await process_frame
 		return
+
+	# Comida (custo da Mina) e madeira/pedra (custo da Forja) de sobra —
+	# não é o que este teste quer provar. Minério NÃO é semeado: precisa
+	# chegar pela cadeia de verdade (Mina → pátio → carregador → Armazém)
+	# antes da Forja render lingote.
+	main.buildings.stock["comida"] = 99999.0
+	main.buildings.stock["madeira"] = 99999.0
+	main.buildings.stock["pedra"] = 99999.0
+	_check(main._build(Buildings.Kind.MINE, ore_cell), "a Mina nasce em cima do depósito de colina")
+	var forge_cell := _build_near(main, Buildings.Kind.FORGE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_check(forge_cell.x >= 0, "a Forja nasce perto da vila")
+	# Farm + Mina + Forja + carregador = 4 vagas — uma Casa só (capacidade 3)
+	# deixaria uma delas sem gente pra sempre, por falta de população, não
+	# por falha da cadeia sendo testada.
+	_build_near(main, Buildings.Kind.HOUSE, main._village_cell, main.BUILDING_SEARCH_RADIUS)
 
 	var steps := 0
 	var got_lingote := false
@@ -1504,27 +1601,36 @@ func _test_scene_ore_chain_produces_lingote() -> void:
 	main.queue_free()
 	await process_frame
 
-# Roda D'Água e Moinho de Vento na cena de verdade (tier 5, o último):
-# confirma que `_cell_near_water`/`_cell_on_high_ground` acham célula válida
-# na semente real do jogo — medido à parte (fora deste arquivo) que existe
-# água e terreno alto dentro do raio de busca a partir da vila, então isto
-# não é sorte. O mecanismo de "energia sem combustível" em si já está
-# provado isolado em `_test_buildings_waterwheel_powers_without_burning_any_stock`
-# e `_test_buildings_windmill_powers_without_burning_any_stock` — aqui
-# checar `building.powered` não distinguiria QUAL fonte alimentou (Gerador
-# também pode estar no raio do mesmo prédio), então não tentamos.
+# Roda D'Água e Moinho de Vento na cena de verdade: confirma que dá pra
+# construir os dois na semente real do jogo — medido à parte (fora deste
+# arquivo) que existe água e terreno alto dentro do raio de busca a partir
+# da vila, então isto não é sorte, e que `_can_place_kind_at` rejeita célula
+# fora da regra (água/altura) mesmo com estoque de sobra. O mecanismo de
+# "energia sem combustível" em si já está provado isolado em
+# `_test_buildings_waterwheel_powers_without_burning_any_stock` e
+# `_test_buildings_windmill_powers_without_burning_any_stock`.
 func _test_scene_waterwheel_and_windmill_placement() -> void:
 	var main := _boot_main()
 	await process_frame
-	var unlock_steps := _advance_to_tier(main, main.MAX_BUILDING_TIER, 40000)
-	var waterwheel: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.WATERWHEEL)
-	var windmill: Array = main.buildings.list.filter(func(b): return b.kind == Buildings.Kind.WINDMILL)
-	_check(waterwheel.size() == 1, "a semente real do jogo tem água perto o bastante da vila pra Roda D'Água nascer (%d passos até o último tier)" % unlock_steps)
-	_check(windmill.size() == 1, "a semente real do jogo tem terreno alto o bastante perto da vila pro Moinho de Vento nascer")
-	if waterwheel.size() == 1:
-		_check(main._has_adjacent_water(waterwheel[0].cell), "a célula onde a Roda D'Água nasceu realmente tem água de verdade do lado")
-	if windmill.size() == 1:
-		_check(main.map.height_at(windmill[0].cell.x, windmill[0].cell.y) >= main.WINDMILL_MIN_HEIGHT, "a célula onde o Moinho nasceu realmente está no limiar de altura exigido")
+	_reveal_everything(main)
+	_give_plenty_of_stock(main)
+
+	# Célula de grama comum (sem água do lado, sem ser terreno alto) não
+	# serve pra nenhum dos dois — a regra de posição vale mesmo com dinheiro
+	# de sobra.
+	var plain_cell: Vector2i = main._village_cell + Vector2i(1, 1)
+	if main.map.kind_at(plain_cell.x, plain_cell.y) == MapGen.Kind.GRASS and not main._has_adjacent_water(plain_cell) and main.map.height_at(plain_cell.x, plain_cell.y) < main.WINDMILL_MIN_HEIGHT:
+		_check(not main._build(Buildings.Kind.WATERWHEEL, plain_cell), "Roda D'Água não nasce numa grama comum, sem água do lado")
+		_check(not main._build(Buildings.Kind.WINDMILL, plain_cell), "Moinho de Vento não nasce numa grama comum, terreno baixo")
+
+	var waterwheel_cell := _build_near(main, Buildings.Kind.WATERWHEEL, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	var windmill_cell := _build_near(main, Buildings.Kind.WINDMILL, main._village_cell, main.BUILDING_SEARCH_RADIUS)
+	_check(waterwheel_cell.x >= 0, "a semente real do jogo tem água perto o bastante da vila pra Roda D'Água nascer")
+	_check(windmill_cell.x >= 0, "a semente real do jogo tem terreno alto o bastante perto da vila pro Moinho de Vento nascer")
+	if waterwheel_cell.x >= 0:
+		_check(main._has_adjacent_water(waterwheel_cell), "a célula onde a Roda D'Água nasceu realmente tem água de verdade do lado")
+	if windmill_cell.x >= 0:
+		_check(main.map.height_at(windmill_cell.x, windmill_cell.y) >= main.WINDMILL_MIN_HEIGHT, "a célula onde o Moinho nasceu realmente está no limiar de altura exigido")
 
 	main.queue_free()
 	await process_frame

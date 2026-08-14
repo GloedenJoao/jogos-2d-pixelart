@@ -143,6 +143,52 @@ const GENERATOR_FUEL_RATE := 0.3
 const POWER_SOURCE_KINDS := [Kind.GENERATOR, Kind.WATERWHEEL, Kind.WINDMILL]
 const FUELED_POWER_KINDS := [Kind.GENERATOR]
 
+# Agência de jogador: até aqui todo prédio (além do Armazém+Fazenda+Casa
+# iniciais) nascia sozinho por nível — João jogou, achou o jogo bonito mas
+# sem nada pra FAZER, e pediu um menu de construção de verdade. `BUILD_COST`
+# é pago do Armazém na hora que o jogador decide construir (`main.gd`, menu
+# de construção) — cada prédio escolhido por ele, no lugar que ele escolhe,
+# não mais automático.
+#
+# Números de primeira passada, não calibrados por medição como o resto do
+# jogo — balanceamento de custo é decisão de design, ajustável depois com
+# playtesting de verdade (diferente de constante de simulação, que tem
+# resposta certa mensurável). A única regra dura: nada pode custar um
+# recurso que ainda não existe quando aquele prédio é o PRIMEIRO que dá pra
+# construir — por isso Casa/Posto de Lenhador/Pedreira custam comida, o
+# único recurso que já existe antes de qualquer economia de madeira/pedra
+# rodar (a Fazenda nasce de graça no início, ver main.gd). O resto custa
+# madeira/pedra, só alcançável depois que Lenhador/Pedreira já produzem.
+const BUILD_COST := {
+	Kind.HOUSE: {"comida": 10.0},
+	Kind.LUMBERJACK: {"comida": 15.0},
+	Kind.QUARRY: {"comida": 15.0},
+	Kind.FARM: {"madeira": 10.0},
+	Kind.MINE: {"madeira": 20.0, "pedra": 10.0},
+	Kind.SAWMILL: {"madeira": 15.0},
+	Kind.STONE_WORKSHOP: {"pedra": 15.0},
+	Kind.GENERATOR: {"madeira": 20.0},
+	Kind.FORGE: {"pedra": 15.0, "madeira": 10.0},
+	Kind.WATERWHEEL: {"madeira": 20.0, "pedra": 10.0},
+	Kind.WINDMILL: {"madeira": 20.0, "pedra": 10.0},
+}
+
+func can_afford(kind: int) -> bool:
+	var cost: Dictionary = BUILD_COST.get(kind, {})
+	for resource in cost:
+		if stock.get(resource, 0.0) < cost[resource]:
+			return false
+	return true
+
+# Só chamar depois de confirmar `can_afford` — não protege contra ficar
+# negativo, é responsabilidade de quem chama (mesma convenção do resto do
+# arquivo: `Buildings` não valida regra de jogo sozinho, main.gd decide
+# quando é hora de gastar).
+func pay_cost(kind: int) -> void:
+	var cost: Dictionary = BUILD_COST.get(kind, {})
+	for resource in cost:
+		stock[resource] = stock.get(resource, 0.0) - cost[resource]
+
 # Pessoas por Casa. Duas casas (o que `main.gd` planta perto da vila) somam
 # 6 — cobre as 4 vagas iniciais (Posto de Lenhador, Pedreira, Serraria,
 # carregador) com folga pra quando houver mais prédio staffável.
